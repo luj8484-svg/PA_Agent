@@ -38,6 +38,49 @@ def test_pre_roll_selects_exactly_250_daily_and_100_four_hour_bars():
     assert selection.four_hour == tuple(four_hour)
 
 
+def test_duplicate_before_exact_pre_roll_does_not_change_selection():
+    training_start, daily, four_hour = _pre_roll_inputs()
+    older_daily = make_bars(
+        interval="1d",
+        count=5,
+        start_utc_ms=-5 * INTERVAL_MS["1d"],
+    )
+
+    selection = select_exact_pre_roll(
+        [older_daily[0], *older_daily, *daily],
+        four_hour,
+        training_start_utc_ms=training_start,
+    )
+
+    assert selection.daily == tuple(daily)
+
+
+def test_duplicate_in_discarded_segment_does_not_change_active_suffix():
+    bars = make_bars(interval="4h", count=10)
+    del bars[6]
+
+    segment = active_segment(
+        [bars[2], *bars],
+        interval_ms=INTERVAL_MS["4h"],
+        decision_time_utc_ms=bars[-1].close_time_utc_ms,
+    )
+
+    assert segment.bars == tuple(bars[6:])
+
+
+def test_duplicate_inside_active_segment_fails_closed():
+    bars = make_bars(interval="4h", count=10)
+
+    with pytest.raises(PreRollSelectionError) as error:
+        active_segment(
+            [*bars, bars[-2]],
+            interval_ms=INTERVAL_MS["4h"],
+            decision_time_utc_ms=bars[-1].close_time_utc_ms,
+        )
+
+    assert error.value.reason == "DATA_SEGMENT_NOT_CONTINUOUS"
+
+
 @pytest.mark.parametrize(("daily_count", "four_hour_count"), [(249, 100), (250, 99)])
 def test_pre_roll_rejects_even_one_missing_bar(daily_count, four_hour_count):
     training_start = 250 * INTERVAL_MS["1d"]
@@ -71,6 +114,13 @@ def test_pre_roll_rejects_gap_in_exact_window():
         )
 
     assert error.value.reason == "DATA_SEGMENT_NOT_CONTINUOUS"
+    assert ("1d_step_ms", str(INTERVAL_MS["1d"])) in error.value.expected_values
+    assert error.value.gap_intervals == (
+        (
+            daily_with_gap[119].open_time_utc_ms + INTERVAL_MS["1d"],
+            daily_with_gap[120].open_time_utc_ms - 1,
+        ),
+    )
 
 
 def test_active_segment_resets_at_gap_and_marks_only_first_post_gap_decision():

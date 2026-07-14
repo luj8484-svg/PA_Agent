@@ -33,11 +33,15 @@
 - EMA 首种子、`min_periods=N`、恒定序列、单点跳变、NaN/Inf 拒绝。
 - ATR 首 TR、14 根算术种子、第 15 根 Wilder 递推、gap reset。
 - Donchian `high[t-20:t]`/`low[t-20:t]`、相等不突破、当前 bar 不泄漏。
-- pre-roll 严格精确 250D/100×4H、少一根失败、split 边界不重播种、缺口首点 reset 且后续重新 warm-up。
+- pre-roll 严格精确 250D/100×4H、少一根失败、窗口外旧重复不污染、split 边界不重播种、缺口首点 reset 且后续重新 warm-up。
+- `training_start_utc_ms` 同时对齐 UTC 1D/4H；训练前最后一根只播种，训练后第一根完整 4H 才允许产生 Candidate/ValidationFailure。
+- active segment 从 decision bar 向后取最新连续 suffix；淘汰 segment 中的重复不污染当前结果，active suffix 内重复 fail closed。
 - 15 位有效数字、round-half-even、负零、极大/极小有限值。
 - 1D bar 的 `close_time <= decision_time`，未来日线不可见。
 - LONG、SHORT、NO_SETUP 及每个 reason 的 truth table；Canonical/ID 中出现 `NO_TRADE` 或 `setup_state` 必须失败，展示层兼容映射单独测试。
 - ValidationFailure 与市场无 setup 互斥。
+- ValidationFailure 对可构造输入保存 decision-visible hash，并冻结 required/observed/gap 证据、未来数据不变性和不同失败数据 ID 分离测试。
+- `STRATEGY_CANDIDATE_GOLDEN_V1` 固定完整 Canonical JSON、visible hash 与 Candidate ID；ATR、Donchian 和完整 Candidate 均由独立参考实现验证。
 - Candidate 禁止 entry intent、execution anchor、execution delay、stop/TP/quantity/contract/cash/margin 和完整区间 dataset hash 字段。
 - 任意输入容器顺序下 Candidate Canonical bytes 不变。
 - `Decimal.from_float(x).adjusted()` 覆盖 subnormal、极小/极大有限值；AST 守卫禁止 float `log10` 推导十进制指数。

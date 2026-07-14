@@ -15,6 +15,17 @@ def _decimal_list(values):
     return [Decimal(value) for value in values]
 
 
+def _reference_previous_donchian(highs, lows, *, index, lookback):
+    reference_high = highs[index - lookback]
+    reference_low = lows[index - lookback]
+    for position in range(index - lookback + 1, index):
+        if highs[position] > reference_high:
+            reference_high = highs[position]
+        if lows[position] < reference_low:
+            reference_low = lows[position]
+    return reference_high, reference_low
+
+
 def test_indicator_golden_fixture_is_exact():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
@@ -69,6 +80,25 @@ def test_donchian_excludes_current_bar_and_requires_full_lookback():
     )
     with pytest.raises(ValueError, match="lookback"):
         previous_donchian(highs, lows, index=2, lookback=3)
+
+
+def test_donchian_matches_independent_reference_across_all_valid_windows():
+    highs = [Decimal(value) for value in (15, 12, 19, 14, 18, 11, 20, 17)]
+    lows = [Decimal(value) for value in (9, 8, 13, 7, 12, 6, 14, 5)]
+
+    for lookback in range(1, len(highs)):
+        for index in range(lookback, len(highs)):
+            assert previous_donchian(
+                highs,
+                lows,
+                index=index,
+                lookback=lookback,
+            ) == _reference_previous_donchian(
+                highs,
+                lows,
+                index=index,
+                lookback=lookback,
+            )
 
 
 @pytest.mark.parametrize("period", [0, -1])

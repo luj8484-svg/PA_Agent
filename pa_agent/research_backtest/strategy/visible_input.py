@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import asdict
 
-from pa_agent.research_backtest.domain.canonical import canonical_sha256
+from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
 from pa_agent.research_backtest.domain.validation import VisibleValidationState
 from pa_agent.research_backtest.versions import (
     ATR_VERSION,
@@ -20,7 +20,7 @@ from pa_agent.research_data.models import Kline
 def _visible(bars: Iterable[Kline], decision_time_utc_ms: int) -> list[Kline]:
     return sorted(
         (bar for bar in bars if bar.close_time_utc_ms <= decision_time_utc_ms),
-        key=lambda bar: bar.open_time_utc_ms,
+        key=lambda bar: (bar.open_time_utc_ms, canonical_dumps(bar)),
     )
 
 

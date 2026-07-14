@@ -188,8 +188,8 @@ Candidate scope 的实验 Manifest 可以声明完整 strategy-data 依赖用于
 ## 7. 端到端数据流
 
 1. 加载第一批 manifest、Canonical records 和缺口事实，重新核对 content hash。
-2. 根据实验 manifest 切出 pre-roll、训练、验证、锁定 OOS；只允许 pre-roll 跨样本边界读取历史，不允许交易或绩效越界。
-3. 2A 对连续有效的已收盘 1D/4H 数据计算版本化指标；每个有效 4H 决策时刻生成 Candidate 或独立 ValidationFailure。
+2. 根据实验 manifest 切出 pre-roll、训练、验证、锁定 OOS；`training_start_utc_ms` 必须同时对齐 UTC 1D/4H open 边界。只允许 pre-roll 跨样本边界读取历史，不允许 Candidate、交易或绩效越界。
+3. 2A 对连续有效的已收盘 1D/4H 数据计算版本化指标；训练起点前只播种不产出，训练起点后每个有效完整 4H 决策时刻生成 Candidate 或独立 ValidationFailure。
 4. 2B 在版本化目标执行分钟读取当时可见的 1m open；先形成独立计划草案，再做 gap、contract、成本、仓位、资金和组合风险判断，分别输出 EntryExecutionPlan、ExitExecutionPlan 或 ExecutionRejection。
 5. 2C 以 UTC 分钟升序消费 trade、mark、funding 和计划，分叉 baseline/conservative 两条独立路径，产生不可变事件和账本。
 6. 缺口由事件引擎按当时是否有行情依赖、计划、持仓或资金费边界解释；第一批缺口事实本身不被改写。

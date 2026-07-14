@@ -76,16 +76,18 @@ def _failure(
     dependency_lock_hash: str,
     expected: tuple[tuple[str, str], ...] = (),
     observed: tuple[tuple[str, str], ...] = (),
+    visible_input_hash: str | None = None,
+    gap_intervals: tuple[tuple[int, int], ...] = (),
 ) -> ValidationFailure:
     return validation_failure(
         reason=reason,
         symbol=symbol,
         decision_time_utc_ms=decision_time_utc_ms,
         affected_interval=affected_interval,
-        decision_visible_input_hash=None,
+        decision_visible_input_hash=visible_input_hash,
         expected_values=expected,
         observed_values=observed,
-        gap_intervals=(),
+        gap_intervals=gap_intervals,
         indicator_config_hash=INDICATOR_CONFIG_HASH,
         code_commit=code_commit,
         dependency_lock_hash=dependency_lock_hash,
@@ -94,6 +96,28 @@ def _failure(
 
 def _materialize(bars: Iterable[Kline]) -> tuple[Kline, ...]:
     return tuple(sorted(bars, key=lambda bar: bar.open_time_utc_ms))
+
+
+def _visible_hash_or_none(
+    *,
+    symbol: str,
+    decision_time_utc_ms: int,
+    training_start_utc_ms: int,
+    daily_bars: Iterable[Kline],
+    four_hour_bars: Iterable[Kline],
+    validation_state: VisibleValidationState,
+) -> str | None:
+    try:
+        return decision_visible_input_hash(
+            symbol=symbol,
+            decision_time_utc_ms=decision_time_utc_ms,
+            training_start_utc_ms=training_start_utc_ms,
+            daily_bars=daily_bars,
+            four_hour_bars=four_hour_bars,
+            validation_state=validation_state,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _trend_state(daily_close: Decimal, ema50: Decimal, ema200: Decimal) -> TrendState:
@@ -116,6 +140,18 @@ def build_candidate(
     validation_state: VisibleValidationState | None = None,
 ) -> StrategyCandidate | ValidationFailure:
     assert_runtime_lock()
+    if validation_state is None:
+        validation_state = VisibleValidationState()
+    daily = _materialize(daily_bars)
+    four_hour = _materialize(four_hour_bars)
+    diagnostic_hash = _visible_hash_or_none(
+        symbol=symbol,
+        decision_time_utc_ms=decision_time_utc_ms,
+        training_start_utc_ms=training_start_utc_ms,
+        daily_bars=daily,
+        four_hour_bars=four_hour,
+        validation_state=validation_state,
+    )
     if symbol not in SUPPORTED_SYMBOLS:
         return _failure(
             reason=ValidationReason.INDICATOR_BOUNDARY_INVALID,
@@ -126,11 +162,40 @@ def build_candidate(
             dependency_lock_hash=dependency_lock_hash,
             expected=(("supported_symbols", "BTCUSDT,ETHUSDT"),),
             observed=(("symbol", symbol),),
+            visible_input_hash=diagnostic_hash,
         )
-    if validation_state is None:
-        validation_state = VisibleValidationState()
-    daily = _materialize(daily_bars)
-    four_hour = _materialize(four_hour_bars)
+    daily_remainder = training_start_utc_ms % DAILY_INTERVAL_MS
+    four_hour_remainder = training_start_utc_ms % FOUR_HOUR_INTERVAL_MS
+    if daily_remainder != 0 or four_hour_remainder != 0:
+        return _failure(
+            reason=ValidationReason.INDICATOR_BOUNDARY_INVALID,
+            symbol=symbol,
+            decision_time_utc_ms=decision_time_utc_ms,
+            affected_interval="1d/4h",
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+            expected=(
+                ("training_start_mod_1d_ms", "0"),
+                ("training_start_mod_4h_ms", "0"),
+            ),
+            observed=(
+                ("training_start_mod_1d_ms", str(daily_remainder)),
+                ("training_start_mod_4h_ms", str(four_hour_remainder)),
+            ),
+            visible_input_hash=diagnostic_hash,
+        )
+    if decision_time_utc_ms < training_start_utc_ms:
+        return _failure(
+            reason=ValidationReason.DECISION_BEFORE_TRAINING_START,
+            symbol=symbol,
+            decision_time_utc_ms=decision_time_utc_ms,
+            affected_interval="4h",
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+            expected=(("decision_time_min_utc_ms", str(training_start_utc_ms)),),
+            observed=(("decision_time_utc_ms", str(decision_time_utc_ms)),),
+            visible_input_hash=diagnostic_hash,
+        )
 
     try:
         pre_roll = select_exact_pre_roll(
@@ -139,6 +204,23 @@ def build_candidate(
             training_start_utc_ms=training_start_utc_ms,
         )
     except PreRollSelectionError as error:
+        expected = error.expected_values
+        observed = error.observed_values
+        if error.reason == ValidationReason.PRE_ROLL_INSUFFICIENT.value:
+            expected = (
+                ("pre_roll_1d_bars", "250"),
+                ("pre_roll_4h_bars", "100"),
+            )
+            observed = (
+                (
+                    "pre_roll_1d_bars",
+                    str(sum(bar.close_time_utc_ms < training_start_utc_ms for bar in daily)),
+                ),
+                (
+                    "pre_roll_4h_bars",
+                    str(sum(bar.close_time_utc_ms < training_start_utc_ms for bar in four_hour)),
+                ),
+            )
         return _failure(
             reason=error.reason,
             symbol=symbol,
@@ -146,6 +228,10 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            expected=expected,
+            observed=observed,
+            visible_input_hash=diagnostic_hash,
+            gap_intervals=error.gap_intervals,
         )
 
     visible_daily = pre_roll.daily + tuple(
@@ -175,6 +261,7 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            visible_input_hash=diagnostic_hash,
         )
     if any(not bar.is_closed for bar in (*visible_daily, *visible_four_hour)) or not (
         validation_state.daily_closed and validation_state.four_hour_closed
@@ -186,6 +273,7 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            visible_input_hash=diagnostic_hash,
         )
     if not (validation_state.daily_native_valid and validation_state.four_hour_native_valid):
         return _failure(
@@ -195,6 +283,7 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            visible_input_hash=diagnostic_hash,
         )
 
     current_bars = [
@@ -210,6 +299,7 @@ def build_candidate(
             dependency_lock_hash=dependency_lock_hash,
             expected=(("decision_bar_count", "1"),),
             observed=(("decision_bar_count", str(len(current_bars))),),
+            visible_input_hash=diagnostic_hash,
         )
 
     try:
@@ -231,15 +321,52 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            expected=error.expected_values,
+            observed=error.observed_values,
+            visible_input_hash=diagnostic_hash,
+            gap_intervals=error.gap_intervals,
         )
 
     reasons: set[str] = set()
+    expected_evidence: list[tuple[str, str]] = []
+    observed_evidence: list[tuple[str, str]] = []
     if not (validation_state.daily_continuous and validation_state.four_hour_continuous):
         reasons.add(ValidationReason.DATA_SEGMENT_NOT_CONTINUOUS.value)
+        expected_evidence.extend((("daily_continuous", "true"), ("four_hour_continuous", "true")))
+        observed_evidence.extend(
+            (
+                ("daily_continuous", str(validation_state.daily_continuous).lower()),
+                ("four_hour_continuous", str(validation_state.four_hour_continuous).lower()),
+            )
+        )
     if daily_segment.gap_at_decision or four_hour_segment.gap_at_decision:
         reasons.add(ValidationReason.DATA_SEGMENT_NOT_CONTINUOUS.value)
+        if daily_segment.gap_at_decision:
+            expected_evidence.append(("1d_step_ms", str(DAILY_INTERVAL_MS)))
+            observed_evidence.append(("1d_step_ms", str(daily_segment.gap_observed_step_ms)))
+        if four_hour_segment.gap_at_decision:
+            expected_evidence.append(("4h_step_ms", str(FOUR_HOUR_INTERVAL_MS)))
+            observed_evidence.append(("4h_step_ms", str(four_hour_segment.gap_observed_step_ms)))
     if len(daily_segment.bars) < 200 or len(four_hour_segment.bars) < 21:
         reasons.add(ValidationReason.INDICATOR_WARMING_UP.value)
+        expected_evidence.extend(
+            (("continuous_1d_bars_min", "200"), ("continuous_4h_bars_min", "21"))
+        )
+        observed_evidence.extend(
+            (
+                ("continuous_1d_bars", str(len(daily_segment.bars))),
+                ("continuous_4h_bars", str(len(four_hour_segment.bars))),
+            )
+        )
+    active_hash = _visible_hash_or_none(
+        symbol=symbol,
+        decision_time_utc_ms=decision_time_utc_ms,
+        training_start_utc_ms=training_start_utc_ms,
+        daily_bars=daily_segment.bars,
+        four_hour_bars=four_hour_segment.bars,
+        validation_state=validation_state,
+    )
+    active_gaps = tuple(sorted({*daily_segment.gap_intervals, *four_hour_segment.gap_intervals}))
     priority_reason = highest_priority_failure(reasons)
     if priority_reason is not None:
         return _failure(
@@ -249,6 +376,10 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            expected=tuple(expected_evidence),
+            observed=tuple(observed_evidence),
+            visible_input_hash=active_hash,
+            gap_intervals=active_gaps,
         )
     if not daily_segment.bars:
         return _failure(
@@ -258,6 +389,8 @@ def build_candidate(
             affected_interval="1d",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            visible_input_hash=active_hash,
+            gap_intervals=active_gaps,
         )
 
     daily_closes = [bar.close for bar in daily_segment.bars]
@@ -276,6 +409,16 @@ def build_candidate(
                 affected_interval="1d/4h",
                 code_commit=code_commit,
                 dependency_lock_hash=dependency_lock_hash,
+                expected=(
+                    ("continuous_1d_bars_min", "200"),
+                    ("continuous_4h_bars_min", "21"),
+                ),
+                observed=(
+                    ("continuous_1d_bars", str(len(daily_segment.bars))),
+                    ("continuous_4h_bars", str(len(four_hour_segment.bars))),
+                ),
+                visible_input_hash=active_hash,
+                gap_intervals=active_gaps,
             )
         ema50_decimal = float64_to_decimal_15sig(ema50_value)
         ema200_decimal = float64_to_decimal_15sig(ema200_value)
@@ -294,6 +437,8 @@ def build_candidate(
             affected_interval="1d/4h",
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
+            visible_input_hash=active_hash,
+            gap_intervals=active_gaps,
         )
 
     daily_close = daily_segment.bars[-1].close

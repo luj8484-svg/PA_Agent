@@ -14,6 +14,7 @@
 - Schema versions are `STRATEGY_CANDIDATE_SCHEMA_V1` and `VALIDATION_FAILURE_SCHEMA_V1`.
 - Indicator configuration is `INDICATOR_CONFIG_V1`, locked to CPython 3.12.13 and fixed-order scalar Python float recurrence.
 - Initial pre-roll is exactly the final 250 continuous closed 1D bars and 100 continuous closed 4H bars before training start.
+- Training start follows rule A: it is aligned to both UTC 1D and 4H boundaries; pre-roll never emits Candidate, and the first eligible decision bar opens at or after training start.
 - Validation priority is `PRE_ROLL_INSUFFICIENT > DATA_SEGMENT_NOT_CONTINUOUS > INDICATOR_WARMING_UP`.
 - Candidate market view is only `LONG | SHORT | NO_SETUP`.
 - Candidate identity excludes execution intent/delay and full-interval dataset/acquisition hashes.
@@ -116,6 +117,14 @@
 **Interfaces:**
 - Consumes: all 2A outputs.
 - Produces: verified branch and Draft PR; no 2B artifacts.
+
+**PR #1 review remediation:**
+
+- [x] Add `DECISION_BEFORE_TRAINING_START` and aligned training-start boundary tests.
+- [x] Select the exact pre-roll window before rejecting duplicates; validate only the newest active suffix after a gap.
+- [x] Populate constructible failure visible hashes plus required/observed/gap evidence and deterministic IDs.
+- [x] Add `STRATEGY_CANDIDATE_GOLDEN_V1`, independent ATR zero-ULP, Donchian, and Candidate reference checks.
+- [x] Enforce Candidate direction/reason/trend, positive finite price, Donchian ordering, event-time ordering, and hash formats.
 
 - [ ] Run `python -m pytest tests/research_backtest -v`.
 - [ ] Run `python -m pytest tests/research_data -v` and the dedicated first-batch security/scope tests.
