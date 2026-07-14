@@ -16,8 +16,6 @@ class VisibleValidationState:
     four_hour_native_valid: bool = True
     daily_closed: bool = True
     four_hour_closed: bool = True
-    daily_continuous: bool = True
-    four_hour_continuous: bool = True
 
 
 def highest_priority_failure(reasons: Iterable[str]) -> str | None:

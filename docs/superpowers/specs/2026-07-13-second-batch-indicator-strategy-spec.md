@@ -397,3 +397,12 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 7. 未经 2A 单独批准，不得开始 2B。
 8. 改变 execution delay/config 或 decision time 之后的数据，不得改变既有 Candidate 或 ID。
 9. pre-roll 精确使用 250D/100×4H；少一根、跨缺口、跨 split 重播种和缺口后未 warm-up 均有失败测试。
+
+## 2026-07-14 2A 最终源码复查修订
+
+- pre-roll 必须分别收集 1D 与 4H 的可见数量、重复和连续性事实，禁止因先校验 1D 而短路 4H。汇总后统一应用 `PRE_ROLL_INSUFFICIENT > DATA_SEGMENT_NOT_CONTINUOUS > INDICATOR_WARMING_UP`，并保留两周期全部可构造证据与缺口区间。
+- `StrategyCandidate` 必须由 `daily_close`、`ema50_daily`、`ema200_daily` 独立推导 `BULL | BEAR | NEUTRAL`，再校验传入 `trend_state`、`market_view` 与 `market_reason`。三者任一矛盾均 fail closed。
+- 正式 Candidate 禁止空 `candidate_id`。工厂必须先形成不含 ID 的私有 Canonical payload，计算 ID 后一次性构造正式不可变对象；不得借空 ID 绕过内容匹配校验。
+- 连续性唯一真相源是 decision time 可见 K 线链及其 gap intervals。`VisibleValidationState` 不含永久性的 `daily_continuous`/`four_hour_continuous`；旧 segment 的缺口不得永久阻断已经重新 warm-up 的新 active suffix。
+- `visible_validation_state` 仅保留当前可见范围的 closed 与 native-aggregation 状态；连续性由 Canonical K 线序列直接推导。
+- `ValidationFailure` 构造时必须正式验证 Schema、枚举、事件时间、证据 tuple、缺口边界、SHA/commit 格式以及非空 `failure_id` 与 Canonical 内容一致性。工厂同样先计算 payload，再一次性构造正式对象。

@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
 
+from pa_agent.research_backtest.domain.validation import highest_priority_failure
 from pa_agent.research_data.models import Kline
 
 DAILY_PRE_ROLL = 250
@@ -41,6 +42,12 @@ class ActiveSegment:
     gap_at_decision: bool
     gap_intervals: tuple[tuple[int, int], ...]
     gap_observed_step_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreRollAssessment:
+    selected: tuple[Kline, ...]
+    errors: tuple[PreRollSelectionError, ...]
 
 
 def _ordered(bars: Iterable[Kline]) -> tuple[Kline, ...]:
@@ -92,26 +99,35 @@ def _ensure_continuous(
         )
 
 
-def _select(
+def _assess(
     bars: Iterable[Kline],
     *,
     training_start_utc_ms: int,
     required: int,
     interval_ms: int,
     interval_name: str,
-) -> tuple[Kline, ...]:
+) -> _PreRollAssessment:
     visible = _ordered(bar for bar in bars if bar.close_time_utc_ms < training_start_utc_ms)
+    errors: list[PreRollSelectionError] = []
     if len(visible) < required:
-        raise PreRollSelectionError(
-            "PRE_ROLL_INSUFFICIENT",
-            f"requires exactly {required} bars before training start",
-            expected_values=((f"pre_roll_{interval_name}_bars", str(required)),),
-            observed_values=((f"pre_roll_{interval_name}_bars", str(len(visible))),),
+        errors.append(
+            PreRollSelectionError(
+                "PRE_ROLL_INSUFFICIENT",
+                f"requires exactly {required} bars before training start",
+                expected_values=((f"pre_roll_{interval_name}_bars", str(required)),),
+                observed_values=((f"pre_roll_{interval_name}_bars", str(len(visible))),),
+            )
         )
-    selected = visible[-required:]
-    _ensure_unique(selected, interval_name=interval_name)
-    _ensure_continuous(selected, interval_ms, interval_name=interval_name)
-    return selected
+    selected = visible[-required:] if len(visible) >= required else visible
+    for validator in (
+        lambda: _ensure_unique(selected, interval_name=interval_name),
+        lambda: _ensure_continuous(selected, interval_ms, interval_name=interval_name),
+    ):
+        try:
+            validator()
+        except PreRollSelectionError as error:
+            errors.append(error)
+    return _PreRollAssessment(selected=selected, errors=tuple(errors))
 
 
 def select_exact_pre_roll(
@@ -120,21 +136,32 @@ def select_exact_pre_roll(
     *,
     training_start_utc_ms: int,
 ) -> PreRollSelection:
-    daily = _select(
+    daily = _assess(
         daily_bars,
         training_start_utc_ms=training_start_utc_ms,
         required=DAILY_PRE_ROLL,
         interval_ms=DAILY_INTERVAL_MS,
         interval_name="1d",
     )
-    four_hour = _select(
+    four_hour = _assess(
         four_hour_bars,
         training_start_utc_ms=training_start_utc_ms,
         required=FOUR_HOUR_PRE_ROLL,
         interval_ms=FOUR_HOUR_INTERVAL_MS,
         interval_name="4h",
     )
-    return PreRollSelection(daily=daily, four_hour=four_hour)
+    errors = (*daily.errors, *four_hour.errors)
+    if errors:
+        reason = highest_priority_failure(error.reason for error in errors)
+        selected_errors = tuple(error for error in errors if error.reason == reason)
+        raise PreRollSelectionError(
+            reason or "PRE_ROLL_INVALID",
+            "; ".join(str(error) for error in selected_errors),
+            expected_values=tuple(item for error in errors for item in error.expected_values),
+            observed_values=tuple(item for error in errors for item in error.observed_values),
+            gap_intervals=tuple(interval for error in errors for interval in error.gap_intervals),
+        )
+    return PreRollSelection(daily=daily.selected, four_hour=four_hour.selected)
 
 
 def active_segment(

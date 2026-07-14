@@ -256,3 +256,11 @@ Candidate scope 的实验 Manifest 可以声明完整 strategy-data 依赖用于
 10. 样本、置信区间、双基准、Paper Simulation Gate 与 Live Eligibility Gate。
 
 本次只授权 2A；完成 2A PR 后必须停止。2B–2D 仍需分别独立批准。
+
+## 2026-07-14 2A 领域边界补充
+
+- pre-roll 的 1D/4H 验证先并行收集事实、后统一选择最高优先级失败，不允许周期检查顺序改变结果。
+- Candidate 的趋势不是外部可信输入：领域对象按日线 close 与 EMA50/EMA200 重新推导并校验；正式 Candidate ID 不可为空且必须匹配 Canonical 内容。
+- 当前 active suffix 的 K 线链与 gap intervals 是连续性的唯一来源，不保存可永久污染未来决策的历史 continuity boolean。新 segment 完成全部 warm-up 后恢复 Candidate。
+- ValidationFailure 与 Candidate 均采用 payload→确定性 ID→正式 frozen object 的单次构造流程，并在对象边界验证 Schema、内容哈希和 ID 一致性。
+- 上述修改仍严格属于 2A；不新增 ExecutionPlan、费用、仓位、事件、账本或报告。

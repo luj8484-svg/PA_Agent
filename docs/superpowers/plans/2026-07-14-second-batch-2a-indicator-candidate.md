@@ -131,3 +131,11 @@
 - [ ] Run Ruff, `git diff --check`, `python -m compileall pa_agent/research_backtest`, scope scans, deterministic repeated runs, and `main` versus feature first-batch regression comparison.
 - [ ] Inspect the final directory tree and diff to prove no 2B module or symbol exists.
 - [ ] Push `feature/second-batch-2a-indicator-candidate`, create a Draft PR to the fork `main`, report complete command output and known limits, then stop.
+
+## Final source-review remediation
+
+- [x] Collect 1D and 4H pre-roll count/duplicate/continuity facts before applying the frozen cross-period failure priority.
+- [x] Independently derive Candidate trend from daily close/EMA50/EMA200 and prohibit empty or content-mismatched Candidate IDs.
+- [x] Remove historical continuity booleans; derive active continuity only from decision-visible chains and gaps, with post-gap recovery tests.
+- [x] Validate ValidationFailure schema, hashes, evidence/gaps, and deterministic ID at the frozen object boundary.
+- [ ] Re-run the complete acceptance matrix, update the existing Draft PR, and stop without merging or starting 2B.

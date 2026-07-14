@@ -562,3 +562,10 @@ BANKRUPT    经济余额不足且 V1 不允许补款/借贷，数据本身仍可
 10. 所有事件和账本重复运行逐字节一致，且 wall clock 变化不改变任何领域对象或确定性 ID。
 11. Funding 在 wallet 与 isolated 风控视图中只产生一次经济扣款，reserve 超额和 BANKRUPT 路径均有 Golden Fixture。
 12. FillEvent 不含状态 before/after，StateSnapshot 可由相同事件流经 Ledger reducer 唯一重建。
+
+## 2026-07-14 与 2A 最终边界的衔接
+
+- 2B 只能接收具有非空且内容匹配 `candidate_id` 的正式 StrategyCandidate；不得接收内部草稿 payload 或绕过 Candidate 的趋势一致性校验。
+- Candidate 连续性由 decision-visible active K 线链确定。历史 gap 后一旦新 segment 完成 warm-up，2B 不得使用任何全局 continuity 标志再次拒绝它。
+- ValidationFailure 是 2A 的终止产物，不进入 ExecutionPlan 生命周期；其 Schema、哈希和 `failure_id` 必须已经在 2A 对象边界校验通过。
+- 本节仅澄清接口契约，不授权或实现任何 2B/2C 代码。

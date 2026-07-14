@@ -330,15 +330,6 @@ def build_candidate(
     reasons: set[str] = set()
     expected_evidence: list[tuple[str, str]] = []
     observed_evidence: list[tuple[str, str]] = []
-    if not (validation_state.daily_continuous and validation_state.four_hour_continuous):
-        reasons.add(ValidationReason.DATA_SEGMENT_NOT_CONTINUOUS.value)
-        expected_evidence.extend((("daily_continuous", "true"), ("four_hour_continuous", "true")))
-        observed_evidence.extend(
-            (
-                ("daily_continuous", str(validation_state.daily_continuous).lower()),
-                ("four_hour_continuous", str(validation_state.four_hour_continuous).lower()),
-            )
-        )
     if daily_segment.gap_at_decision or four_hour_segment.gap_at_decision:
         reasons.add(ValidationReason.DATA_SEGMENT_NOT_CONTINUOUS.value)
         if daily_segment.gap_at_decision:

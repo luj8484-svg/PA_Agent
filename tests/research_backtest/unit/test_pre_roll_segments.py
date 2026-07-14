@@ -123,6 +123,64 @@ def test_pre_roll_rejects_gap_in_exact_window():
     )
 
 
+def test_daily_gap_and_99_four_hour_bars_prioritizes_insufficient():
+    training_start, _daily, _four_hour = _pre_roll_inputs()
+    daily_with_gap = make_bars(interval="1d", count=251, start_utc_ms=-INTERVAL_MS["1d"])
+    del daily_with_gap[120]
+    four_hour = make_bars(
+        interval="4h",
+        count=99,
+        start_utc_ms=training_start - 99 * INTERVAL_MS["4h"],
+    )
+
+    with pytest.raises(PreRollSelectionError) as error:
+        select_exact_pre_roll(daily_with_gap, four_hour, training_start_utc_ms=training_start)
+
+    assert error.value.reason == "PRE_ROLL_INSUFFICIENT"
+    assert ("pre_roll_4h_bars", "99") in error.value.observed_values
+    assert error.value.gap_intervals
+
+
+def test_249_daily_bars_and_four_hour_gap_prioritizes_insufficient():
+    training_start, _daily, _four_hour = _pre_roll_inputs()
+    daily = make_bars(interval="1d", count=249)
+    four_hour_with_gap = make_bars(
+        interval="4h",
+        count=101,
+        start_utc_ms=training_start - 101 * INTERVAL_MS["4h"],
+    )
+    del four_hour_with_gap[50]
+
+    with pytest.raises(PreRollSelectionError) as error:
+        select_exact_pre_roll(daily, four_hour_with_gap, training_start_utc_ms=training_start)
+
+    assert error.value.reason == "PRE_ROLL_INSUFFICIENT"
+    assert ("pre_roll_1d_bars", "249") in error.value.observed_values
+    assert error.value.gap_intervals
+
+
+def test_daily_and_four_hour_gaps_report_non_continuous():
+    training_start, _daily, _four_hour = _pre_roll_inputs()
+    daily_with_gap = make_bars(interval="1d", count=251, start_utc_ms=-INTERVAL_MS["1d"])
+    del daily_with_gap[120]
+    four_hour_with_gap = make_bars(
+        interval="4h",
+        count=101,
+        start_utc_ms=training_start - 101 * INTERVAL_MS["4h"],
+    )
+    del four_hour_with_gap[50]
+
+    with pytest.raises(PreRollSelectionError) as error:
+        select_exact_pre_roll(
+            daily_with_gap,
+            four_hour_with_gap,
+            training_start_utc_ms=training_start,
+        )
+
+    assert error.value.reason == "DATA_SEGMENT_NOT_CONTINUOUS"
+    assert len(error.value.gap_intervals) == 2
+
+
 def test_active_segment_resets_at_gap_and_marks_only_first_post_gap_decision():
     bars = make_bars(interval="4h", count=5)
     del bars[2]

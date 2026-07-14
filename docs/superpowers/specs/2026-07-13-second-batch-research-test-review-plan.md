@@ -365,3 +365,12 @@ pytest tests/research_data/test_binance_public_security.py tests/research_data/t
 - 估算强平不等于 Binance 实际强平。
 - 回测和统计门槛通过也不能保证未来收益。
 - 本次修订仍不得创建第二批业务代码。下一次若获单独授权，只能开始 2A：指标、Golden Fixture、StrategyCandidate、ValidationFailure 和确定性纯函数/静态守卫；2B–2D 仍未批准。
+
+## 2026-07-14 2A 最终复查新增验收
+
+- 冻结跨周期组合：`1D gap + 4H 99 bars => PRE_ROLL_INSUFFICIENT`、`1D 249 bars + 4H gap => PRE_ROLL_INSUFFICIENT`、`1D gap + 4H gap => DATA_SEGMENT_NOT_CONTINUOUS`；同时断言另一周期证据未被短路丢失。
+- 对 Candidate 增加 daily close/EMA 与 trend_state 矛盾、空 ID、格式正确但内容错误 ID 的拒绝测试。
+- 断言 `VisibleValidationState` 不含历史 continuity boolean；缺口后的新 active suffix 完成 warm-up 后必须重新生成 Candidate。
+- 对 ValidationFailure 增加非法 Schema、哈希、空/错误 ID、倒置 gap interval 的构造拒绝测试。
+- Candidate Golden 随 decision-visible Schema 的受控变更同步更新，并继续由独立标准库序列化/散列参考验证。
+- 验收仍需执行 2A 全量、第一批全量、安全/范围守卫、Ruff、format check、diff check、compileall 和固定 seed 回归；Draft PR 不自动合并，2B 不启动。

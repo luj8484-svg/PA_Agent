@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
@@ -84,6 +84,14 @@ class StrategyCandidate:
         if not isinstance(self.trend_state, TrendState):
             raise ValueError("candidate trend state must use the frozen enum")
 
+        derived_trend_state = _derive_trend_state(
+            daily_close=self.daily_close,
+            ema50_daily=self.ema50_daily,
+            ema200_daily=self.ema200_daily,
+        )
+        if self.trend_state is not derived_trend_state:
+            raise ValueError("candidate trend state contradicts daily close and EMA values")
+
         expected_market = classify_market(
             trend_state=self.trend_state,
             current_close=self.decision_close,
@@ -106,14 +114,13 @@ class StrategyCandidate:
             raise ValueError("candidate SHA-256 fields must be 64 lowercase hex characters")
         if re.fullmatch(r"[0-9a-f]{7,64}", self.code_commit) is None:
             raise ValueError("code_commit must be a lowercase hexadecimal commit identity")
-        if self.candidate_id and re.fullmatch(r"cand_[0-9a-f]{24}", self.candidate_id) is None:
+        if re.fullmatch(r"cand_[0-9a-f]{24}", self.candidate_id) is None:
             raise ValueError("candidate_id has an invalid format")
-        if self.candidate_id:
-            payload = asdict(self)
-            payload.pop("candidate_id")
-            expected_candidate_id = f"cand_{canonical_sha256(payload)[:24]}"
-            if self.candidate_id != expected_candidate_id:
-                raise ValueError("candidate_id does not match Candidate Canonical content")
+        payload = asdict(self)
+        payload.pop("candidate_id")
+        expected_candidate_id = f"cand_{canonical_sha256(payload)[:24]}"
+        if self.candidate_id != expected_candidate_id:
+            raise ValueError("candidate_id does not match Candidate Canonical content")
 
     def canonical_json(self) -> str:
         return canonical_dumps(self)
@@ -125,14 +132,27 @@ def candidate_id_for(candidate: StrategyCandidate) -> str:
     return f"cand_{canonical_sha256(payload)[:24]}"
 
 
+def _derive_trend_state(
+    *, daily_close: Decimal, ema50_daily: Decimal, ema200_daily: Decimal
+) -> TrendState:
+    if daily_close > ema200_daily and ema50_daily > ema200_daily:
+        return TrendState.BULL
+    if daily_close < ema200_daily and ema50_daily < ema200_daily:
+        return TrendState.BEAR
+    return TrendState.NEUTRAL
+
+
 def strategy_candidate(**values: object) -> StrategyCandidate:
-    candidate = StrategyCandidate(
-        schema_version=STRATEGY_CANDIDATE_SCHEMA_VERSION,
-        candidate_id="",
-        strategy_id=STRATEGY_ID,
-        strategy_version=STRATEGY_VERSION,
-        decision_visible_input_version=DECISION_VISIBLE_INPUT_VERSION,
-        created_by="PYTHON_DETERMINISTIC",
-        **values,
-    )
-    return replace(candidate, candidate_id=candidate_id_for(candidate))
+    fixed_values = {
+        "schema_version": STRATEGY_CANDIDATE_SCHEMA_VERSION,
+        "strategy_id": STRATEGY_ID,
+        "strategy_version": STRATEGY_VERSION,
+        "decision_visible_input_version": DECISION_VISIBLE_INPUT_VERSION,
+        "created_by": "PYTHON_DETERMINISTIC",
+    }
+    forbidden = fixed_values.keys() & values.keys()
+    if forbidden:
+        raise ValueError(f"Candidate factory owns fixed fields: {sorted(forbidden)}")
+    payload = {**fixed_values, **values}
+    candidate_id = f"cand_{canonical_sha256(payload)[:24]}"
+    return StrategyCandidate(candidate_id=candidate_id, **payload)

@@ -9,10 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from pa_agent.research_backtest.domain.candidates import candidate_id_for
+from pa_agent.research_backtest.domain.candidates import candidate_id_for, strategy_candidate
 from pa_agent.research_backtest.domain.canonical import canonical_dumps
 from pa_agent.research_backtest.domain.enums import MarketReason, MarketView, TrendState
 from pa_agent.research_backtest.domain.failures import validation_failure
+from pa_agent.research_backtest.domain.validation import VisibleValidationState
 from pa_agent.research_backtest.strategy.btc_eth_pa_v1 import classify_market
 from pa_agent.research_backtest.strategy.candidate_factory import build_candidate
 from tests.research_backtest.helpers import INTERVAL_MS, make_bars
@@ -138,10 +139,8 @@ def test_complete_candidate_hashes_match_independent_stdlib_reference():
         "training_start_utc_ms": training_start,
         "visible_validation_state": {
             "daily_closed": True,
-            "daily_continuous": True,
             "daily_native_valid": True,
             "four_hour_closed": True,
-            "four_hour_continuous": True,
             "four_hour_native_valid": True,
         },
     }
@@ -207,6 +206,13 @@ def test_candidate_schema_is_frozen_and_contains_no_execution_or_contract_fields
         candidate.symbol = "ETHUSDT"
 
 
+def test_visible_validation_state_has_no_historical_continuity_truth_source():
+    field_names = {field.name for field in fields(VisibleValidationState)}
+
+    assert "daily_continuous" not in field_names
+    assert "four_hour_continuous" not in field_names
+
+
 def test_candidate_schema_rejects_illegal_market_price_time_and_hash_combinations():
     training_start, daily, four_hour, decision_time = _candidate_inputs()
     candidate = _build(daily, four_hour, training_start, decision_time)
@@ -226,14 +232,44 @@ def test_candidate_schema_rejects_illegal_market_price_time_and_hash_combination
             replace(candidate, **changes)
 
 
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"daily_close": Decimal("1")},
+        {"ema50_daily": Decimal("1")},
+    ),
+)
+def test_candidate_independently_rejects_trend_ema_contradictions(changes):
+    training_start, daily, four_hour, decision_time = _candidate_inputs()
+    candidate = _build(daily, four_hour, training_start, decision_time)
+
+    with pytest.raises(ValueError, match="trend state contradicts"):
+        replace(candidate, **changes)
+
+
+def test_candidate_rejects_empty_id_instead_of_bypassing_content_validation():
+    training_start, daily, four_hour, decision_time = _candidate_inputs()
+    candidate = _build(daily, four_hour, training_start, decision_time)
+
+    with pytest.raises(ValueError, match="candidate_id"):
+        replace(candidate, candidate_id="")
+
+
 def test_candidate_id_hashes_every_non_id_field():
     training_start, daily, four_hour, decision_time = _candidate_inputs()
     candidate = _build(daily, four_hour, training_start, decision_time)
-    changed = replace(
-        candidate,
-        candidate_id="",
-        decision_close=candidate.decision_close + Decimal("1"),
-    )
+    values = asdict(candidate)
+    for fixed_field in (
+        "schema_version",
+        "candidate_id",
+        "strategy_id",
+        "strategy_version",
+        "decision_visible_input_version",
+        "created_by",
+    ):
+        values.pop(fixed_field)
+    values["decision_close"] = candidate.decision_close + Decimal("1")
+    changed = strategy_candidate(**values)
 
     assert candidate_id_for(candidate) == candidate.candidate_id
     assert candidate_id_for(changed) != candidate.candidate_id
@@ -368,8 +404,8 @@ def test_candidate_factory_rejects_symbols_outside_btc_eth_scope():
         four_hour_bars=four_hour,
         training_start_utc_ms=training_start,
         decision_time_utc_ms=decision_time,
-        code_commit="abc123",
-        dependency_lock_hash="lock123",
+        code_commit="a" * 40,
+        dependency_lock_hash="b" * 64,
     )
 
     assert failure.reason.value == "INDICATOR_BOUNDARY_INVALID"
@@ -399,6 +435,32 @@ def test_gap_resets_segment_then_reports_warming_up_on_next_bar():
     assert ("continuous_1d_bars_min", "200") in second.expected_values
     assert ("continuous_4h_bars_min", "21") in second.expected_values
     assert ("continuous_4h_bars", "2") in second.observed_values
+
+
+def test_candidate_recovers_after_post_gap_active_segment_finishes_warmup():
+    training_start, daily, _four_hour, _decision_time = _candidate_inputs()
+    four_hour = make_bars(
+        interval="4h",
+        count=130,
+        start_utc_ms=training_start - 100 * INTERVAL_MS["4h"],
+    )
+    del four_hour[106]
+
+    first_post_gap = _build(
+        daily,
+        four_hour,
+        training_start,
+        four_hour[106].close_time_utc_ms,
+    )
+    recovered = _build(
+        daily,
+        four_hour,
+        training_start,
+        four_hour[-1].close_time_utc_ms,
+    )
+
+    assert first_post_gap.reason.value == "DATA_SEGMENT_NOT_CONTINUOUS"
+    assert recovered.candidate_id.startswith("cand_")
 
 
 def test_different_visible_failure_data_changes_id_but_future_data_does_not():
@@ -467,13 +529,43 @@ def test_validation_failure_id_hashes_all_non_id_fields():
         expected_values=(("required", "20"),),
         observed_values=(("actual", "19"),),
         gap_intervals=(),
-        indicator_config_hash="config",
-        code_commit="abc",
-        dependency_lock_hash="lock",
+        indicator_config_hash="a" * 64,
+        code_commit="b" * 40,
+        dependency_lock_hash="c" * 64,
     )
 
     assert failure.failure_id.startswith("val_")
     assert len(failure.failure_id) == 28
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"failure_id": ""},
+        {"failure_id": "val_" + "0" * 24},
+        {"schema_version": "VALIDATION_FAILURE_SCHEMA_V0"},
+        {"indicator_config_hash": "not-a-sha256"},
+        {"decision_visible_input_hash": "not-a-sha256"},
+        {"gap_intervals": ((2, 1),)},
+    ),
+)
+def test_validation_failure_rejects_illegal_schema_hash_id_and_gap_content(changes):
+    failure = validation_failure(
+        reason="INDICATOR_WARMING_UP",
+        symbol="BTCUSDT",
+        decision_time_utc_ms=1,
+        affected_interval="4h",
+        decision_visible_input_hash=None,
+        expected_values=(("required", "20"),),
+        observed_values=(("actual", "19"),),
+        gap_intervals=(),
+        indicator_config_hash="a" * 64,
+        code_commit="b" * 40,
+        dependency_lock_hash="c" * 64,
+    )
+
+    with pytest.raises(ValueError):
+        replace(failure, **changes)
 
 
 def test_candidate_factory_api_has_no_wall_clock_or_execution_configuration():
