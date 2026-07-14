@@ -121,7 +121,7 @@ def build_candidate(
     four_hour = _materialize(four_hour_bars)
 
     try:
-        select_exact_pre_roll(
+        pre_roll = select_exact_pre_roll(
             daily,
             four_hour,
             training_start_utc_ms=training_start_utc_ms,
@@ -136,11 +136,29 @@ def build_candidate(
             dependency_lock_hash=dependency_lock_hash,
         )
 
-    visible_daily = tuple(bar for bar in daily if bar.close_time_utc_ms <= decision_time_utc_ms)
-    visible_four_hour = tuple(
-        bar for bar in four_hour if bar.close_time_utc_ms <= decision_time_utc_ms
+    visible_daily = pre_roll.daily + tuple(
+        bar
+        for bar in daily
+        if training_start_utc_ms <= bar.open_time_utc_ms
+        and bar.close_time_utc_ms <= decision_time_utc_ms
     )
-    if any(bar.symbol != symbol for bar in (*visible_daily, *visible_four_hour)):
+    visible_four_hour = pre_roll.four_hour + tuple(
+        bar
+        for bar in four_hour
+        if training_start_utc_ms <= bar.open_time_utc_ms
+        and bar.close_time_utc_ms <= decision_time_utc_ms
+    )
+    identity_invalid = (
+        any(
+            bar.symbol != symbol or bar.interval != "1d" or bar.stream != "trade"
+            for bar in visible_daily
+        )
+        or any(
+            bar.symbol != symbol or bar.interval != "4h" or bar.stream != "trade"
+            for bar in visible_four_hour
+        )
+    )
+    if identity_invalid:
         return _failure(
             reason=ValidationReason.INDICATOR_BOUNDARY_INVALID,
             symbol=symbol,
