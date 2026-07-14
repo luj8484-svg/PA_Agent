@@ -38,4 +38,3 @@ def make_bars(
             )
         )
     return bars
-

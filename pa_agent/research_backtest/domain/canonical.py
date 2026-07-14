@@ -49,4 +49,3 @@ def canonical_dumps(value: Any) -> str:
 
 def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_dumps(value).encode("utf-8")).hexdigest()
-

@@ -61,4 +61,3 @@ def strategy_candidate(**values: object) -> StrategyCandidate:
         **values,
     )
     return replace(candidate, candidate_id=candidate_id_for(candidate))
-

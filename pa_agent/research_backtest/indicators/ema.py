@@ -30,4 +30,3 @@ def ema(values: Sequence[Decimal], period: int) -> tuple[float | None, ...]:
         if index + 1 >= period:
             result[index] = state
     return tuple(result)
-

@@ -34,9 +34,7 @@ def _ordered_unique(bars: Iterable[Kline]) -> tuple[Kline, ...]:
     ordered = tuple(sorted(bars, key=lambda bar: bar.open_time_utc_ms))
     keys = [bar.open_time_utc_ms for bar in ordered]
     if len(keys) != len(set(keys)):
-        raise PreRollSelectionError(
-            "DATA_SEGMENT_NOT_CONTINUOUS", "duplicate bar open time"
-        )
+        raise PreRollSelectionError("DATA_SEGMENT_NOT_CONTINUOUS", "duplicate bar open time")
     return ordered
 
 
@@ -47,9 +45,7 @@ def _ensure_continuous(bars: tuple[Kline, ...], interval_ms: int) -> None:
         current.open_time_utc_ms - previous.open_time_utc_ms != interval_ms
         for previous, current in pairwise(bars)
     ):
-        raise PreRollSelectionError(
-            "DATA_SEGMENT_NOT_CONTINUOUS", "pre-roll contains a time gap"
-        )
+        raise PreRollSelectionError("DATA_SEGMENT_NOT_CONTINUOUS", "pre-roll contains a time gap")
 
 
 def _select(
@@ -59,9 +55,7 @@ def _select(
     required: int,
     interval_ms: int,
 ) -> tuple[Kline, ...]:
-    visible = _ordered_unique(
-        bar for bar in bars if bar.close_time_utc_ms < training_start_utc_ms
-    )
+    visible = _ordered_unique(bar for bar in bars if bar.close_time_utc_ms < training_start_utc_ms)
     if len(visible) < required:
         raise PreRollSelectionError(
             "PRE_ROLL_INSUFFICIENT",
@@ -99,9 +93,7 @@ def active_segment(
     interval_ms: int,
     decision_time_utc_ms: int,
 ) -> ActiveSegment:
-    visible = _ordered_unique(
-        bar for bar in bars if bar.close_time_utc_ms <= decision_time_utc_ms
-    )
+    visible = _ordered_unique(bar for bar in bars if bar.close_time_utc_ms <= decision_time_utc_ms)
     if not visible:
         return ActiveSegment(bars=(), gap_at_decision=False)
 

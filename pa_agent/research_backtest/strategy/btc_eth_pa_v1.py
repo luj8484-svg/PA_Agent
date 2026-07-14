@@ -37,4 +37,3 @@ def classify_market(
     if current_close > donchian_high:
         return MarketDecision(MarketView.NO_SETUP, MarketReason.BREAKOUT_AGAINST_TREND)
     return MarketDecision(MarketView.NO_SETUP, MarketReason.NO_BREAKOUT)
-

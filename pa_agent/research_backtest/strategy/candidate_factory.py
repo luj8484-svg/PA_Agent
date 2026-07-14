@@ -160,15 +160,12 @@ def build_candidate(
         if training_start_utc_ms <= bar.open_time_utc_ms
         and bar.close_time_utc_ms <= decision_time_utc_ms
     )
-    identity_invalid = (
-        any(
-            bar.symbol != symbol or bar.interval != "1d" or bar.stream != "trade"
-            for bar in visible_daily
-        )
-        or any(
-            bar.symbol != symbol or bar.interval != "4h" or bar.stream != "trade"
-            for bar in visible_four_hour
-        )
+    identity_invalid = any(
+        bar.symbol != symbol or bar.interval != "1d" or bar.stream != "trade"
+        for bar in visible_daily
+    ) or any(
+        bar.symbol != symbol or bar.interval != "4h" or bar.stream != "trade"
+        for bar in visible_four_hour
     )
     if identity_invalid:
         return _failure(

@@ -28,4 +28,3 @@ def assert_runtime_lock() -> None:
             f"{LOCKED_PYTHON_IMPLEMENTATION} {LOCKED_PYTHON_VERSION}; "
             f"received {implementation} {version}"
         )
-

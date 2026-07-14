@@ -57,4 +57,3 @@ def wilder_atr(
         state = (float(period - 1) * state + true_ranges[index]) / float(period)
         result[index] = state
     return tuple(result)
-

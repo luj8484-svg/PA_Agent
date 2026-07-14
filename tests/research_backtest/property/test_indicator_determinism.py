@@ -43,6 +43,4 @@ def test_atr_is_byte_stable_for_repeated_runs(closes):
     highs = [value + Decimal("1") for value in closes]
     lows = [value - Decimal("0.5") for value in closes]
 
-    assert wilder_atr(highs, lows, closes, period=14) == wilder_atr(
-        highs, lows, closes, period=14
-    )
+    assert wilder_atr(highs, lows, closes, period=14) == wilder_atr(highs, lows, closes, period=14)

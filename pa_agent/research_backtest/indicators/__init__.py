@@ -1,2 +1,1 @@
 """Frozen deterministic indicator functions."""
-

@@ -95,10 +95,14 @@ def test_active_segment_resets_at_gap_and_marks_only_first_post_gap_decision():
 
 
 def test_failure_priority_is_frozen():
-    assert highest_priority_failure(
-        {"INDICATOR_WARMING_UP", "DATA_SEGMENT_NOT_CONTINUOUS", "PRE_ROLL_INSUFFICIENT"}
-    ) == "PRE_ROLL_INSUFFICIENT"
-    assert highest_priority_failure(
-        {"INDICATOR_WARMING_UP", "DATA_SEGMENT_NOT_CONTINUOUS"}
-    ) == "DATA_SEGMENT_NOT_CONTINUOUS"
+    assert (
+        highest_priority_failure(
+            {"INDICATOR_WARMING_UP", "DATA_SEGMENT_NOT_CONTINUOUS", "PRE_ROLL_INSUFFICIENT"}
+        )
+        == "PRE_ROLL_INSUFFICIENT"
+    )
+    assert (
+        highest_priority_failure({"INDICATOR_WARMING_UP", "DATA_SEGMENT_NOT_CONTINUOUS"})
+        == "DATA_SEGMENT_NOT_CONTINUOUS"
+    )
     assert highest_priority_failure({"INDICATOR_WARMING_UP"}) == "INDICATOR_WARMING_UP"

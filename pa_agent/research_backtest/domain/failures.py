@@ -65,4 +65,3 @@ def validation_failure(
         created_by="PYTHON_DETERMINISTIC",
     )
     return replace(failure, failure_id=failure_id_for(failure))
-
