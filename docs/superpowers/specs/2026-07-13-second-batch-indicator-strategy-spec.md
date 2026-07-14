@@ -65,11 +65,19 @@ pre_roll_policy_version = PRE_ROLL_POLICY_V1_EXACT_250D_100X4H
 
 1. 对每个 symbol，以训练区间 `training_start_utc_ms` 为唯一播种锚点。
 2. 严格选择训练起点之前、`close_time_utc_ms < training_start_utc_ms` 的最后 **精确 250 根连续 1D** 和最后 **精确 100 根连续 4H**；多余历史不得进入初始种子。
+   - 必须先按 close time 截取最后精确窗口，再对窗口内主键唯一性和连续性 fail closed；窗口以外更早历史的重复或异常不得污染 pre-roll。
 3. 250D/100×4H 均须已收盘、UTC 严格连续并通过原生周期交叉验证。任一数量不足即 `PRE_ROLL_INSUFFICIENT`，不得缩短、复制、插值或跨缺口补齐。
 4. 训练、验证和锁定 OOS 共享同一递推状态；跨 split 边界绝不重新播种。split 标签不得进入指标值、Candidate Canonical bytes 或 `candidate_id`。
 5. pre-roll bar 只用于指标状态，不生成 Candidate、交易、账本或绩效。
 6. 若运行中发现 1D 或 4H 缺口，在缺口后的第一根 bar 开始新 segment，并以该 bar 作为 EMA/TR 的新内部种子；缺口决策点输出 `DATA_SEGMENT_NOT_CONTINUOUS`，随后连续 bar 在各指标重新满足 `min_periods` 前输出 `INDICATOR_WARMING_UP`。
 7. 新 segment 不读取缺口前指标状态。EMA200 需要连续 200 根 1D，EMA50 需要 50 根 1D，ATR14 需要 14 根 4H，Donchian20 决策需要当前 bar 前 20 根 4H；全部满足后方可恢复 Candidate。
+8. active segment 必须从 decision bar 向后扫描得到最新连续 suffix；最后一次 gap 以前的 segment 完全淘汰。淘汰 segment 中的重复/异常不影响当前结果，但 active suffix 内任一重复时间戳必须 `DATA_SEGMENT_NOT_CONTINUOUS` fail closed。
+
+### 2.3 训练起点和可决策边界（规则 A）
+
+- `training_start_utc_ms` 必须同时满足 UTC 1D 和 4H open 边界，即分别对 86,400,000ms 和 14,400,000ms 取模均为零；否则 `INDICATOR_BOUNDARY_INVALID`。
+- pre-roll bar 只播种指标，禁止生成 Candidate。任何 `decision_time_utc_ms < training_start_utc_ms` 必须输出 `ValidationFailure/DECISION_BEFORE_TRAINING_START`。
+- 第一个允许决策的 bar 必须满足 `bar.open_time_utc_ms >= training_start_utc_ms`，且只能在该 bar 完整收盘后以其市场 close time 生成 Candidate 或 ValidationFailure。
 
 同一决策时刻存在多个失败时，优先级严格冻结为：
 
@@ -308,6 +316,7 @@ created_by = PYTHON_DETERMINISTIC
 允许原因至少包含：
 
 ```text
+DECISION_BEFORE_TRAINING_START
 PRE_ROLL_INSUFFICIENT
 DATA_SEGMENT_NOT_CONTINUOUS
 NATIVE_AGGREGATION_NOT_VALID
@@ -322,11 +331,17 @@ UNCLOSED_BAR
 
 ValidationFailure 保存 symbol、decision time、受影响数据范围、gap intervals、期望/实际版本和内容哈希；不保存方向。
 
+- 只要输入仍可 Canonical 序列化，就必须写入只覆盖该 decision time 可见数据的 `decision_visible_input_hash`；只有输入本身无法 Canonical 化时才允许为 null。
+- `PRE_ROLL_INSUFFICIENT` 必须记录 250D/100×4H 的 required/observed 数量；segment gap 必须记录 expected/observed step 与真实缺口区间；`INDICATOR_WARMING_UP` 必须记录各周期 min/observed 连续 bar 数。
+- `failure_id` 必须随可见失败数据或证据变化而变化；decision time 之后的数据不得改变既有 failure hash、Canonical bytes 或 ID。
+
 Candidate 与 ValidationFailure 的全部时间字段只能来自已验证市场数据的事件时钟：4H/1D bar 的 open/close time 或实验清单冻结的确定性边界。下载时间、进程时间、系统当前时间和其他本地 wall clock 不得进入领域对象、Canonical JSON 或确定性 ID；如报告外壳需要 `generated_at`，它只能作为非确定性展示元数据并明确排除在所有内容哈希之外。
 
 ## 11. Golden Fixture V1
 
 fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期输出写入 Canonical JSON；fixture manifest 自身的 SHA-256 纳入指标测试配置。
+
+另行冻结 `STRATEGY_CANDIDATE_GOLDEN_V1`，保存一个完整 Candidate 的 Canonical JSON、`decision_visible_input_hash` 和 `candidate_id`。Candidate Golden 必须通过不调用生产哈希函数的标准库参考序列化/散列实现独立复核。
 
 ### 11.1 EMA3 种子和 min_periods 最小样例
 
@@ -365,6 +380,9 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 
 - 训练末尾、验证开头和 OOS 开头使用同一递推状态。
 - 插入 1 根 4H 缺口后必须开始新 segment，并在 warm-up 完成前只产生 ValidationFailure。
+- 训练起点前最后一根 4H 不得产生 Candidate；训练起点后第一根完整 4H 才进入可决策区间；非 UTC 1D/4H 对齐的 training start 必须 fail closed。
+- 精确 pre-roll 窗口以外、已淘汰 segment 内的重复不得污染当前结果；active segment 内重复必须 fail closed。
+- ValidationFailure 的可见 hash、expected/observed、gap intervals 和 failure ID 必须通过未来数据不变性测试。
 - 改变 split 标签但不改变数据内容和决策时刻，不得改变指标值或 Candidate bytes。
 - 在 decision time 之后追加、删除或修改任意未来 bar，不得改变过去 Candidate 的指标、Canonical bytes 或 `candidate_id`。
 
@@ -379,3 +397,12 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 7. 未经 2A 单独批准，不得开始 2B。
 8. 改变 execution delay/config 或 decision time 之后的数据，不得改变既有 Candidate 或 ID。
 9. pre-roll 精确使用 250D/100×4H；少一根、跨缺口、跨 split 重播种和缺口后未 warm-up 均有失败测试。
+
+## 2026-07-14 2A 最终源码复查修订
+
+- pre-roll 必须分别收集 1D 与 4H 的可见数量、重复和连续性事实，禁止因先校验 1D 而短路 4H。汇总后统一应用 `PRE_ROLL_INSUFFICIENT > DATA_SEGMENT_NOT_CONTINUOUS > INDICATOR_WARMING_UP`，并保留两周期全部可构造证据与缺口区间。
+- `StrategyCandidate` 必须由 `daily_close`、`ema50_daily`、`ema200_daily` 独立推导 `BULL | BEAR | NEUTRAL`，再校验传入 `trend_state`、`market_view` 与 `market_reason`。三者任一矛盾均 fail closed。
+- 正式 Candidate 禁止空 `candidate_id`。工厂必须先形成不含 ID 的私有 Canonical payload，计算 ID 后一次性构造正式不可变对象；不得借空 ID 绕过内容匹配校验。
+- 连续性唯一真相源是 decision time 可见 K 线链及其 gap intervals。`VisibleValidationState` 不含永久性的 `daily_continuous`/`four_hour_continuous`；旧 segment 的缺口不得永久阻断已经重新 warm-up 的新 active suffix。
+- `visible_validation_state` 仅保留当前可见范围的 closed 与 native-aggregation 状态；连续性由 Canonical K 线序列直接推导。
+- `ValidationFailure` 构造时必须正式验证 Schema、枚举、事件时间、证据 tuple、缺口边界、SHA/commit 格式以及非空 `failure_id` 与 Canonical 内容一致性。工厂同样先计算 payload，再一次性构造正式对象。

@@ -33,11 +33,15 @@
 - EMA 首种子、`min_periods=N`、恒定序列、单点跳变、NaN/Inf 拒绝。
 - ATR 首 TR、14 根算术种子、第 15 根 Wilder 递推、gap reset。
 - Donchian `high[t-20:t]`/`low[t-20:t]`、相等不突破、当前 bar 不泄漏。
-- pre-roll 严格精确 250D/100×4H、少一根失败、split 边界不重播种、缺口首点 reset 且后续重新 warm-up。
+- pre-roll 严格精确 250D/100×4H、少一根失败、窗口外旧重复不污染、split 边界不重播种、缺口首点 reset 且后续重新 warm-up。
+- `training_start_utc_ms` 同时对齐 UTC 1D/4H；训练前最后一根只播种，训练后第一根完整 4H 才允许产生 Candidate/ValidationFailure。
+- active segment 从 decision bar 向后取最新连续 suffix；淘汰 segment 中的重复不污染当前结果，active suffix 内重复 fail closed。
 - 15 位有效数字、round-half-even、负零、极大/极小有限值。
 - 1D bar 的 `close_time <= decision_time`，未来日线不可见。
 - LONG、SHORT、NO_SETUP 及每个 reason 的 truth table；Canonical/ID 中出现 `NO_TRADE` 或 `setup_state` 必须失败，展示层兼容映射单独测试。
 - ValidationFailure 与市场无 setup 互斥。
+- ValidationFailure 对可构造输入保存 decision-visible hash，并冻结 required/observed/gap 证据、未来数据不变性和不同失败数据 ID 分离测试。
+- `STRATEGY_CANDIDATE_GOLDEN_V1` 固定完整 Canonical JSON、visible hash 与 Candidate ID；ATR、Donchian 和完整 Candidate 均由独立参考实现验证。
 - Candidate 禁止 entry intent、execution anchor、execution delay、stop/TP/quantity/contract/cash/margin 和完整区间 dataset hash 字段。
 - 任意输入容器顺序下 Candidate Canonical bytes 不变。
 - `Decimal.from_float(x).adjusted()` 覆盖 subnormal、极小/极大有限值；AST 守卫禁止 float `log10` 推导十进制指数。
@@ -361,3 +365,12 @@ pytest tests/research_data/test_binance_public_security.py tests/research_data/t
 - 估算强平不等于 Binance 实际强平。
 - 回测和统计门槛通过也不能保证未来收益。
 - 本次修订仍不得创建第二批业务代码。下一次若获单独授权，只能开始 2A：指标、Golden Fixture、StrategyCandidate、ValidationFailure 和确定性纯函数/静态守卫；2B–2D 仍未批准。
+
+## 2026-07-14 2A 最终复查新增验收
+
+- 冻结跨周期组合：`1D gap + 4H 99 bars => PRE_ROLL_INSUFFICIENT`、`1D 249 bars + 4H gap => PRE_ROLL_INSUFFICIENT`、`1D gap + 4H gap => DATA_SEGMENT_NOT_CONTINUOUS`；同时断言另一周期证据未被短路丢失。
+- 对 Candidate 增加 daily close/EMA 与 trend_state 矛盾、空 ID、格式正确但内容错误 ID 的拒绝测试。
+- 断言 `VisibleValidationState` 不含历史 continuity boolean；缺口后的新 active suffix 完成 warm-up 后必须重新生成 Candidate。
+- 对 ValidationFailure 增加非法 Schema、哈希、空/错误 ID、倒置 gap interval 的构造拒绝测试。
+- Candidate Golden 随 decision-visible Schema 的受控变更同步更新，并继续由独立标准库序列化/散列参考验证。
+- 验收仍需执行 2A 全量、第一批全量、安全/范围守卫、Ruff、format check、diff check、compileall 和固定 seed 回归；Draft PR 不自动合并，2B 不启动。
