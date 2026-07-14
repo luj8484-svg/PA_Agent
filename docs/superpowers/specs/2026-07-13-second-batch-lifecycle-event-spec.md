@@ -76,7 +76,7 @@ contract_rule_version
 contract_rule_content_hash
 maintenance_margin_version
 liquidation_estimate_version
-strategy_data_content_hash
+decision_visible_input_hash
 execution_data_content_hash
 config_hash
 code_commit
@@ -221,7 +221,7 @@ LONG stop estimate  = floor_to_tick(stop_trigger*(1-s))
 SHORT stop estimate = ceil_to_tick(stop_trigger*(1+s))
 ```
 
-若 LONG stop/TP 不满足 `stop < entry < TP`，或 SHORT 不满足 `TP < entry < stop`，应产生 `ExecutionRejection/PRICE_GEOMETRY_INVALID` 并使实验 fail closed。它依赖 entry fill、ATR 和 tick 量化，因此属于执行边界错误，不属于 Candidate ValidationFailure，也不属于市场无 setup。
+若 LONG stop/TP 不满足 `stop < entry < TP`，或 SHORT 不满足 `TP < entry < stop`，仅对该笔计划产生 `ExecutionRejection/PRICE_GEOMETRY_INVALID`；Candidate 和其他 symbol/时刻的实验路径继续。只有由非有限数、Schema/版本不一致或无法重放等系统性错误导致价格几何无法判断时，才按对应数据/数值原因使路径 INVALID。价格几何拒绝依赖 entry fill、ATR 和 tick 量化，因此不属于 Candidate ValidationFailure，也不属于市场无 setup。
 
 实际退出 fill：
 
@@ -413,6 +413,7 @@ ETH 拒绝后 BTC 必须保持 `0.750`，不得把 ETH 释放的风险或现金�
 - 来源可以是当前 exchangeInfo、最接近快照或官方公开规则重建。
 - 必须记录 approximation method、距离回放时刻、假设有效区间和证据 hash。
 - 实验 ID 和报告标题必须包含 `APPROXIMATED`。
+- Paper simulation 的样本交集使用已审批 `APPROXIMATED` 规则版本自身声明的有效覆盖区间，不强制叠加 VERIFIED 覆盖；审批证据、有效期和压力测试必须完整保留。
 - APPROXIMATED 结果不能与 VERIFIED 结果合并统计，必须进行规则区间和成本压力测试，只能支持无真实资金的 Paper Simulation Gate。
 - APPROXIMATED 永远不能直接支持 Live Eligibility Gate、实盘链路或自动交易。
 
@@ -483,7 +484,7 @@ isolated_margin_balance + unrealized_pnl(mark_price)
 
 ### 11.1 intraminute drawdown breach 审计
 
-`INTRAMINUTE_DRAWDOWN_AUDIT_V1` 在每分钟使用持仓不利 mark 极值估算最低 equity：LONG 使用 mark low，SHORT 使用 mark high。多 symbol 时把各自不利极值同时相加作为保守代理，明确标记为非同步路径估算而非可成交的精确组合轨迹。
+`INTRAMINUTE_DRAWDOWN_AUDIT_V1` 必须在步骤 2–7 的 open 事件全部处理完成后、步骤 8 分钟内 stop/TP/强平触发前，冻结 `intraminute_open_position_snapshot`。审计只使用该快照中的仓位：LONG 使用本分钟 mark low，SHORT 使用 mark high 估算最低 equity；open 已退出的仓位不纳入，open 新入场的仓位纳入。多 symbol 时把各自不利极值同时相加作为保守代理，明确标记为非同步路径估算而非可成交的精确组合轨迹。
 
 ```text
 estimated_intraminute_drawdown
@@ -491,7 +492,7 @@ estimated_intraminute_drawdown
     / peak_close_equity
 ```
 
-估算值 `>10%` 记录 `INTRAMINUTE_DRAWDOWN_BREACH_ESTIMATE`。它不替代也不提前触发基于 1m close 的 `1M_CLOSE_EQUITY_HALT`，但锁定 OOS 只要出现一次该事件，就不得通过 Paper Simulation 或 Live Eligibility 的 forward gate，即使该分钟 close 未触发 HALT。
+估算值 `>=10%` 记录 `INTRAMINUTE_DRAWDOWN_BREACH_ESTIMATE`，与 close HALT 使用相同的包含边界。它不替代也不提前触发基于 1m close 的 `1M_CLOSE_EQUITY_HALT`，但锁定 OOS 只要出现一次该事件，就不得通过 Paper Simulation 或 Live Eligibility 的 forward gate，即使该分钟 close 未触发 HALT。
 
 ## 12. baseline/conservative 和 PATH_AMBIGUOUS
 
@@ -557,7 +558,7 @@ BANKRUPT    经济余额不足且 V1 不允许补款/借贷，数据本身仍可
 6. 所有分钟内组合命中矩阵都有 baseline/conservative Golden Fixture。
 7. 关键数据缺失后没有任何假设 stop 或伪造 fill。
 8. APPROXIMATED 结果只能通过带水印、压力测试后的 Paper Simulation Gate，不能通过 Live Eligibility Gate。
-9. 1m close 回撤恰好 10% 时触发 `1M_CLOSE_EQUITY_HALT`；盘中估算超过 10% 但 close 未触发时只记审计，并阻断 forward gate。
+9. 1m close 或盘中估算回撤恰好 10% 均命中各自 `>=10%` 边界；盘中估算命中但 close 未触发时只记审计，并阻断 forward gate。
 10. 所有事件和账本重复运行逐字节一致，且 wall clock 变化不改变任何领域对象或确定性 ID。
 11. Funding 在 wallet 与 isolated 风控视图中只产生一次经济扣款，reserve 超额和 BANKRUPT 路径均有 Golden Fixture。
 12. FillEvent 不含状态 before/after，StateSnapshot 可由相同事件流经 Ledger reducer 唯一重建。

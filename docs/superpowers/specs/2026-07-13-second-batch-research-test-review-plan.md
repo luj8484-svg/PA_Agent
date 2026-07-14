@@ -2,7 +2,7 @@
 
 日期：2026-07-13
 修订日期：2026-07-14
-状态：设计评审稿；不是实施授权
+状态：2A 条件批准；2B–2D 未授权
 
 ## 1. 分阶段提交原则
 
@@ -23,6 +23,7 @@
 
 - 隔离 `research_backtest/domain`、`indicators` 和 `strategy` 包。
 - frozen StrategyCandidate、ValidationFailure 和枚举 Schema。
+- 正式版本：`BTC_ETH_PA_STRATEGY_V1_1`、`STRATEGY_CANDIDATE_SCHEMA_V1`、`VALIDATION_FAILURE_SCHEMA_V1`、`INDICATOR_CONFIG_V1`。
 - EMA、ATR、Donchian、pre-roll、segment 和 float64→Decimal 纯函数。
 - `INDICATOR_GOLDEN_V1` 与 `STRATEGY_GOLDEN_V1` Canonical fixtures。
 - 静态守卫，禁止导入 execution/risk/events/ledger/GUI/AI/HTTP。
@@ -32,15 +33,17 @@
 - EMA 首种子、`min_periods=N`、恒定序列、单点跳变、NaN/Inf 拒绝。
 - ATR 首 TR、14 根算术种子、第 15 根 Wilder 递推、gap reset。
 - Donchian `high[t-20:t]`/`low[t-20:t]`、相等不突破、当前 bar 不泄漏。
-- pre-roll 250D/100×4H、split 边界连续、缺口后重新 warm-up。
+- pre-roll 严格精确 250D/100×4H、少一根失败、split 边界不重播种、缺口首点 reset 且后续重新 warm-up。
 - 15 位有效数字、round-half-even、负零、极大/极小有限值。
 - 1D bar 的 `close_time <= decision_time`，未来日线不可见。
 - LONG、SHORT、NO_SETUP 及每个 reason 的 truth table；Canonical/ID 中出现 `NO_TRADE` 或 `setup_state` 必须失败，展示层兼容映射单独测试。
 - ValidationFailure 与市场无 setup 互斥。
-- Candidate 禁止 stop/TP/quantity/contract/cash/margin 字段。
+- Candidate 禁止 entry intent、execution anchor、execution delay、stop/TP/quantity/contract/cash/margin 和完整区间 dataset hash 字段。
 - 任意输入容器顺序下 Candidate Canonical bytes 不变。
 - `Decimal.from_float(x).adjusted()` 覆盖 subnormal、极小/极大有限值；AST 守卫禁止 float `log10` 推导十进制指数。
 - 锁定 Python/平台版本的标量 float 固定顺序递推达到 0 ULP；向量化、FMA、代数重排或 wall clock 输入必须被守卫拒绝。
+- `decision_visible_input_hash` 仅覆盖决策点可见 segment、验证状态和指标版本；修改未来数据或 execution config 不得改变历史 Candidate/ID。
+- 同时存在失败时固定验证 `PRE_ROLL_INSUFFICIENT > DATA_SEGMENT_NOT_CONTINUOUS > INDICATOR_WARMING_UP`。
 
 ### 2.3 2A 验收门槛
 
@@ -48,6 +51,7 @@
 - 两个独立实现（简单参考循环与生产函数）逐点一致。
 - 2A package 无第二批后续模块和外部 I/O。
 - 代码/配置/依赖改变时 Candidate ID 改变；采集时间、本地 wall clock 改变时不改变。
+- 0/1/2 分钟 execution delay 变化和 decision time 之后数据变化均不得改变历史 Candidate ID。
 - 2A 只可提交指标、Golden Fixture、StrategyCandidate、ValidationFailure、确定性 LONG/SHORT/NO_SETUP 纯函数和静态守卫；不得出现 Plan/Rejection、费用、仓位、事件、账本或报告模块。
 - 审核者书面批准后才允许 2B。
 
@@ -155,7 +159,7 @@ FillEvent 必须只含成交事实。所有 cash/position before-after 均由 re
 - 事件名固定为 `1M_CLOSE_EQUITY_HALT_TRIGGERED`。触发后保留并继续生成市场 Candidate，只取消未成交 EntryExecutionPlan；后续 LONG/SHORT Candidate 由执行层拒绝为 `EXPERIMENT_HALTED`。
 - 下一有效 1m open 全平；关键数据缺失则 INVALID。
 - HALTED 后无现金曲线填充、无完整区间 CAGR。
-- 每分钟用 LONG mark low/SHORT mark high 计算保守 intraminute drawdown audit；多 symbol 标为非同步估算。OOS 只要 `estimated_intraminute_drawdown >10%`，即使 close 未触发 HALT，也不得通过任一 forward gate。
+- 每分钟先处理全部 open 事件，再以分钟内触发前的仓位快照计算 LONG mark low/SHORT mark high 保守 intraminute drawdown audit；多 symbol 标为非同步估算。OOS 只要 `estimated_intraminute_drawdown >=10%`，即使 close 未触发 HALT，也不得通过任一 forward gate。
 
 ### 4.6 2C 验收门槛
 
@@ -271,7 +275,7 @@ gap ATR multiple:  0.4, 0.5, 0.6
 
 ### 9.1 Paper Simulation Gate
 
-仅授权无真实资金、无交易接口的 paper simulation。允许 VERIFIED，也允许显式 `APPROXIMATED` 历史规则，但后者必须在实验 ID/标题/每页报告带水印、与 VERIFIED 分栏，并通过规则有效区间和更保守成本压力测试。锁定 OOS 的 baseline 和 conservative 必须同时满足：
+仅授权无真实资金、无交易接口的 paper simulation。允许 VERIFIED，也允许显式 `APPROXIMATED` 历史规则；后者的样本交集按已审批 APPROXIMATED 规则自身有效覆盖区间构造，不要求 VERIFIED 覆盖，但必须在实验 ID/标题/每页报告带水印、与 VERIFIED 分栏，并通过规则有效区间和更保守成本压力测试。锁定 OOS 的 baseline 和 conservative 必须同时满足：
 
 1. OOS 至少 18 个完整月。
 2. 合计至少 60 笔闭合交易，BTC/ETH 各至少 20 笔。

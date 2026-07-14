@@ -2,8 +2,34 @@
 
 日期：2026-07-13
 修订日期：2026-07-14
-状态：设计评审稿；未授权 2A 实施
-规范版本提案：`BTC_ETH_PA_STRATEGY_V1_1_DRAFT`
+状态：2A 条件批准；完成本次修订后可实施 2A，2B–2D 未授权
+正式版本：`BTC_ETH_PA_STRATEGY_V1_1`
+
+```text
+BTC_ETH_PA_STRATEGY_V1_1
+STRATEGY_CANDIDATE_SCHEMA_V1
+VALIDATION_FAILURE_SCHEMA_V1
+INDICATOR_CONFIG_V1
+DECISION_VISIBLE_INPUT_V1
+PRE_ROLL_POLICY_V1_EXACT_250D_100X4H
+```
+
+`INDICATOR_CONFIG_V1` 的 Canonical 配置固定为：
+
+```text
+python_implementation = CPython
+python_version = 3.12.13
+ema_version = EMA_RECURSIVE_V1_FLOAT64
+ema_periods_daily = [50, 200]
+atr_version = ATR_WILDER_V1_FLOAT64
+atr_period_4h = 14
+donchian_version = DONCHIAN_PREVIOUS_20_V1_DECIMAL
+donchian_lookback_4h = 20
+numeric_boundary_version = FLOAT64_TO_DECIMAL_15SIG_HALF_EVEN_V1
+pre_roll_policy_version = PRE_ROLL_POLICY_V1_EXACT_250D_100X4H
+```
+
+生产入口若不是 CPython 3.12.13 必须 fail closed；不得在其他 Python 版本复用 `INDICATOR_CONFIG_V1` 或宣称 0 ULP。平台、完整 Python build 和依赖锁继续进入 `dependency_lock_hash`。
 
 ## 1. 输入与输出
 
@@ -33,15 +59,25 @@
 
 缺口之后不得沿用缺口之前的 EMA/ATR 状态。缺口后的第一根属于新 segment，必须重新满足全部 warm-up；缺口本身生成数据层事实，在决策时映射为 `ValidationFailure/DATA_SEGMENT_NOT_CONTINUOUS`。
 
-### 2.2 pre-roll 规则
+### 2.2 唯一 pre-roll 算法
 
-- 每个研究 split 从其之前最近的连续 segment 读取 pre-roll。
-- 研究起点前至少 250 根有效 1D 和 100 根有效 4H。
-- 指标跨训练、验证、锁定 OOS 边界连续递推，不在边界重新播种。
-- pre-roll bar 只用于指标，不允许生成交易、账本或绩效。
-- 锁定 OOS 的 pre-roll 可以读取 OOS 起点以前的数据，不能读取 OOS 终点以后或未来修订数据。
+版本：`PRE_ROLL_POLICY_V1_EXACT_250D_100X4H`。
 
-若研究起点不满足数量或连续性，整个 symbol/split 标记 `PRE_ROLL_INSUFFICIENT`，不得缩短 warm-up 或回填。
+1. 对每个 symbol，以训练区间 `training_start_utc_ms` 为唯一播种锚点。
+2. 严格选择训练起点之前、`close_time_utc_ms < training_start_utc_ms` 的最后 **精确 250 根连续 1D** 和最后 **精确 100 根连续 4H**；多余历史不得进入初始种子。
+3. 250D/100×4H 均须已收盘、UTC 严格连续并通过原生周期交叉验证。任一数量不足即 `PRE_ROLL_INSUFFICIENT`，不得缩短、复制、插值或跨缺口补齐。
+4. 训练、验证和锁定 OOS 共享同一递推状态；跨 split 边界绝不重新播种。split 标签不得进入指标值、Candidate Canonical bytes 或 `candidate_id`。
+5. pre-roll bar 只用于指标状态，不生成 Candidate、交易、账本或绩效。
+6. 若运行中发现 1D 或 4H 缺口，在缺口后的第一根 bar 开始新 segment，并以该 bar 作为 EMA/TR 的新内部种子；缺口决策点输出 `DATA_SEGMENT_NOT_CONTINUOUS`，随后连续 bar 在各指标重新满足 `min_periods` 前输出 `INDICATOR_WARMING_UP`。
+7. 新 segment 不读取缺口前指标状态。EMA200 需要连续 200 根 1D，EMA50 需要 50 根 1D，ATR14 需要 14 根 4H，Donchian20 决策需要当前 bar 前 20 根 4H；全部满足后方可恢复 Candidate。
+
+同一决策时刻存在多个失败时，优先级严格冻结为：
+
+```text
+PRE_ROLL_INSUFFICIENT
+> DATA_SEGMENT_NOT_CONTINUOUS
+> INDICATOR_WARMING_UP
+```
 
 ## 3. EMA 的精确定义
 
@@ -186,10 +222,6 @@ decision_time_utc_ms
 decision_bar_open_time_utc_ms
 market_view
 market_reason
-entry_intent
-execution_anchor
-execution_delay_minutes
-execution_delay_version
 decision_close
 daily_close
 trend_state
@@ -198,8 +230,8 @@ ema200_daily
 atr14_4h
 donchian_high_previous_20
 donchian_low_previous_20
-strategy_data_content_hash
-strategy_data_bundle_version
+decision_visible_input_hash
+decision_visible_input_version = DECISION_VISIBLE_INPUT_V1
 indicator_config_hash
 strategy_config_hash
 code_commit
@@ -209,36 +241,69 @@ created_by = PYTHON_DETERMINISTIC
 
 约束：
 
-- LONG/SHORT 的 `entry_intent=SCHEDULED_MARKET`、`execution_anchor=NEXT_4H_OPEN`，并填写 `execution_delay_minutes` 与 `execution_delay_version`；`NO_SETUP` 的这四个执行意图字段全部为 null。
-- `execution_delay_minutes` 是由 `execution_delay_version` 冻结的整数分钟；基准为 `1`，敏感性值为 `0/1/2`。Candidate 仅表达计划意图，不提前绑定下一根开盘成交价。
-- `execution_anchor=NEXT_4H_OPEN` 表示 decision bar close 后的下一 UTC 4H open；实际可执行时刻由后续 EntryExecutionPlan 使用事件时钟计算。
+- `schema_version=STRATEGY_CANDIDATE_SCHEMA_V1`、`strategy_id=BTC_ETH_PA_STRATEGY`、`strategy_version=BTC_ETH_PA_STRATEGY_V1_1`。
+- Candidate 只表达 `LONG | SHORT | NO_SETUP` 市场结论和该结论的可复现指标快照，不携带 entry intent、execution anchor、execution delay 或任何其他执行计划字段。
+- 0/1/2 分钟延迟由 2B 根据 Candidate `decision_time_utc_ms` 与独立 execution config 计算；改变延迟不得改变 Candidate Canonical bytes 或 `candidate_id`。
 - Candidate 不含 `entry_price`、stop、TP、quantity、fee、margin、contract rule、maintenance margin、portfolio state 或 rejection。
-- Candidate 不含 acquisition manifest/hash、Index/audit hash 或 execution data hash。
+- Candidate 不含完整区间 `strategy_data_content_hash`、dataset/acquisition manifest/hash、Index/audit hash 或 execution data hash。
 - 领域对象不可变，未知字段 fail closed。
+
+### 9.1 decision_visible_input_hash
+
+`decision_visible_input_hash` 只覆盖该 decision time 实际可见且影响结论的输入：
+
+```text
+SHA256(Canonical({
+  decision_visible_input_version,
+  symbol,
+  decision_time_utc_ms,
+  training_start_utc_ms,
+  active_daily_segment_from_seed_through_selected_daily_bar,
+  active_4h_segment_from_seed_through_decision_bar,
+  pre_roll_policy_version,
+  visible_validation_state,
+  indicator_versions
+}))
+```
+
+- 初始 segment 从精确 250D/100×4H pre-roll 的第一根开始；缺口重置后从新 segment 第一根开始。
+- `visible_validation_state` 只包含上述可见范围的 closed/continuity/native-aggregation 状态。
+- `indicator_versions` 固定包含 EMA、ATR、Donchian、float64→Decimal 和 `INDICATOR_CONFIG_V1`。
+- 完整回测区间的 `strategy_data_content_hash` 仍保存在实验 Manifest，用于整体数据审计，但明确排除在 Candidate Canonical 对象和 `candidate_id` 之外。
+- 修改 `decision_time_utc_ms` 之后的任意数据、下载时间、采集 Manifest 或 execution config，不得改变既有 Candidate 的指标值、Canonical bytes 或 ID。
 
 `candidate_id`：
 
 ```text
-cand_ + first_24_hex(SHA256(Canonical({
-  schema_version,
-  strategy_version,
-  symbol,
-  decision_time_utc_ms,
-  market_view,
-  market_reason,
-  entry_intent,
-  execution_anchor,
-  execution_delay_minutes,
-  execution_delay_version,
-  strategy_data_content_hash,
-  indicator_config_hash,
-  strategy_config_hash,
-  code_commit,
-  dependency_lock_hash
-})))
+cand_ + first_24_hex(SHA256(Canonical(
+  StrategyCandidate 的全部字段，排除 candidate_id 自身
+)))
 ```
 
+因此任何 Candidate 业务字段变化都会改变 ID；Candidate Schema 中不存在的 execution intent/delay 和完整区间 dataset hash 不可能影响 ID。
+
 ## 10. ValidationFailure
+
+Schema 固定为：
+
+```text
+schema_version = VALIDATION_FAILURE_SCHEMA_V1
+failure_id
+reason
+symbol
+decision_time_utc_ms
+affected_interval
+decision_visible_input_hash       # 无法构造时为 null
+expected_values
+observed_values
+gap_intervals
+indicator_config_hash
+code_commit
+dependency_lock_hash
+created_by = PYTHON_DETERMINISTIC
+```
+
+`failure_id` 是上述全部字段排除自身后的 Canonical SHA-256 前 24 hex，前缀 `val_`。
 
 允许原因至少包含：
 
@@ -250,7 +315,7 @@ DAILY_BAR_NOT_AVAILABLE
 INDICATOR_WARMING_UP
 INDICATOR_NON_FINITE_OR_NON_POSITIVE
 INDICATOR_BOUNDARY_INVALID
-STRATEGY_DATA_HASH_MISMATCH
+DECISION_VISIBLE_INPUT_HASH_MISMATCH
 SCHEMA_VERSION_UNSUPPORTED
 UNCLOSED_BAR
 ```
@@ -301,13 +366,16 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 - 训练末尾、验证开头和 OOS 开头使用同一递推状态。
 - 插入 1 根 4H 缺口后必须开始新 segment，并在 warm-up 完成前只产生 ValidationFailure。
 - 改变 split 标签但不改变数据内容和决策时刻，不得改变指标值或 Candidate bytes。
+- 在 decision time 之后追加、删除或修改任意未来 bar，不得改变过去 Candidate 的指标、Canonical bytes 或 `candidate_id`。
 
 ## 12. 2A 验收门槛
 
 1. Golden Fixture 全部逐字节通过。
 2. 参考纯 Python 实现与生产实现均采用锁定版本的标量 Python `float` 固定顺序递推；在相同解释器、平台和依赖锁下，对随机有限 Decimal OHLC 序列逐点一致，EMA/ATR 允许差异为 0 ULP。
 3. 相同输入顺序或输入容器顺序变化不改变输出。
-4. 所有 Candidate 均没有执行、仓位、成本或 contract 字段。
+4. 所有 Candidate 均没有执行、仓位、成本、完整区间 dataset hash 或 contract 字段。
 5. ValidationFailure 与 `NO_SETUP` 不混用；Canonical 产物中不存在 `NO_TRADE` 或 `setup_state`。
 6. 2A 源码静态守卫证明不导入 GUI、AI、execution、risk、events、ledger 或交易客户端。
 7. 未经 2A 单独批准，不得开始 2B。
+8. 改变 execution delay/config 或 decision time 之后的数据，不得改变既有 Candidate 或 ID。
+9. pre-roll 精确使用 250D/100×4H；少一根、跨缺口、跨 split 重播种和缺口后未 warm-up 均有失败测试。

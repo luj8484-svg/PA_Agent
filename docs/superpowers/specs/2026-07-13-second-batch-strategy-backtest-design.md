@@ -2,7 +2,7 @@
 
 日期：2026-07-13
 修订日期：2026-07-14
-状态：设计评审稿；未授权实施
+状态：2A 条件批准；2B–2D 未授权
 基线：fork `main@bdb17cdff69cd2060a67e7ca314dda972eb7f83a`
 设计分支：`design/second-batch-strategy-backtest`
 
@@ -153,13 +153,13 @@ research_backtest_output/       # gitignored，运行时输出
 
 ### 6.1 输入依赖
 
-- Candidate：`strategy_data_content_hash@STRATEGY_DATA_CONTENT_V1`，含 trade 1m、原生 4H、原生 1D。
+- Candidate：`decision_visible_input_hash@DECISION_VISIBLE_INPUT_V1`，只含该 decision time 可见、从冻结 pre-roll/当前 segment 到决策点的 1D/4H 数据、验证状态和指标版本。
 - 执行和事件路径：`execution_data_content_hash@EXECUTION_DATA_CONTENT_V1`，含 trade 1m、mark 1m、真实 funding。
 - Index：`audit_data_content_hash@AUDIT_DATA_CONTENT_V1`，仅审计，不进入交易计算。
 - 合约规则：独立 `contract_rule_content_hash` 和覆盖回放时刻的规则版本。
 - 维持保证金：独立 maintenance-margin archive/version，不属于 Candidate。
 
-`acquisition_manifest_hash` 和 `acquisition_run_id` 只用于溯源，禁止进入 Candidate、Plan、Fill、账本或计算实验 ID。
+完整区间 `strategy_data_content_hash` 保留在实验 Manifest 和计算实验 ID，用于数据集审计；禁止进入 Candidate Canonical 对象和 `candidate_id`。`acquisition_manifest_hash` 和 `acquisition_run_id` 只用于溯源，禁止进入 Candidate、Plan、Fill、账本或计算实验 ID。
 
 ### 6.2 实验身份
 
@@ -183,7 +183,7 @@ computational_experiment_id = SHA256(Canonical({
 }))
 ```
 
-Candidate scope 只能声明 strategy-data 依赖；完整回测 scope 必须显式声明 execution、contract rule、maintenance margin 和全部模型版本。
+Candidate scope 的实验 Manifest 可以声明完整 strategy-data 依赖用于审计，但 Candidate 身份只能声明 `decision_visible_input_hash`；完整回测 scope 必须显式声明 execution、contract rule、maintenance margin 和全部模型版本。
 
 ## 7. 端到端数据流
 
@@ -205,6 +205,7 @@ Candidate scope 只能声明 strategy-data 依赖；完整回测 scope 必须显
 - 同时到期的 BTC/ETH 计划先全部独立计算，再共同缩量；不得按输入顺序、字典顺序或 symbol 优先级分配资金。
 - 所有领域对象 frozen/不可变；状态变化只允许产生新事件并由 reducer 得到新状态。
 - Candidate、Entry/Exit Plan、Rejection、Fill、Event、Ledger 和 StateSnapshot 的时间只能来自市场/实验事件时钟；本地 wall clock 只能作为领域外展示元数据，不能进入对象、Canonical bytes 或确定性 ID。
+- StrategyCandidate 不含 entry intent、execution anchor 或 execution delay。2B 从 Candidate decision time 与独立 execution config 计算目标时刻；0/1/2 分钟延迟变化不得改变 Candidate 或 ID。
 - 同一实验重复运行时，Candidate、Rejection、Plan、Fill、账本和报告 Canonical bytes 必须完全一致。
 
 ## 9. 生命周期和职责分离
@@ -225,7 +226,7 @@ Candidate scope 只能声明 strategy-data 依赖；完整回测 scope 必须显
 
 ### 2A：指标与 Candidate 纯函数
 
-下一次单独授权最多只覆盖：指标数值函数、Golden Fixture、StrategyCandidate/ValidationFailure Schema、确定性 LONG/SHORT/NO_SETUP 规则以及证明边界的纯函数/静态守卫。禁止 EntryExecutionPlan、ExitExecutionPlan、ExecutionRejection、费用、仓位、事件、撮合、资金费、保证金、账本和报告。
+本次 2A 授权只覆盖：EMA/ATR/Donchian、冻结 pre-roll/segment reset、float64→Decimal、Golden Fixture、StrategyCandidate/ValidationFailure Schema、确定性 LONG/SHORT/NO_SETUP 规则、Canonical ID 和证明边界的静态守卫。禁止 EntryExecutionPlan、ExitExecutionPlan、ExecutionRejection、费用、滑点、contract rule、仓位、事件、撮合、资金费、强平、账本和报告。
 
 ### 2B：Entry/Exit ExecutionPlan、风险与仓位纯函数
 
@@ -254,4 +255,4 @@ Candidate scope 只能声明 strategy-data 依赖；完整回测 scope 必须显
 9. `1M_CLOSE_EQUITY_HALT` 触发采样点、盘中回撤审计和终态报告语义。
 10. 样本、置信区间、双基准、Paper Simulation Gate 与 Live Eligibility Gate。
 
-本设计获批不等于授权一次性实施 2A–2D；每个子批次仍需独立批准。
+本次只授权 2A；完成 2A PR 后必须停止。2B–2D 仍需分别独立批准。
