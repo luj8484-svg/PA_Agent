@@ -1,6 +1,7 @@
 # 第二批指标引擎与 StrategyCandidate 规范
 
 日期：2026-07-13
+修订日期：2026-07-14
 状态：设计评审稿；未授权 2A 实施
 规范版本提案：`BTC_ETH_PA_STRATEGY_V1_1_DRAFT`
 
@@ -58,7 +59,8 @@ ema_t = alpha*x_t + (1-alpha)*ema_(t-1)
 - 第一根 close 是内部递推种子；前 `N-1` 根输出状态为 `WARMING_UP`，不能用于比较。
 - close 从 Canonical Decimal 以 `float(decimal_string)` 一次转换为 IEEE-754 binary64；禁止中间转 float32。
 - NaN、Inf 或非正 close 产生 ValidationFailure。
-- 本规范不依赖 pandas 的默认 EWM 行为；即便使用 pandas，输出必须逐位匹配本递推定义。
+- V1 生产实现必须采用固定运算顺序的标量 Python `float` 递推；禁止以 pandas/NumPy 向量化、并行归约、FMA 或代数重排替代该运算顺序。
+- Python 实现版本、解释器版本和目标平台必须进入 `dependency_lock_hash`。只有相同锁定运行时、相同输入和相同标量运算顺序才适用 0 ULP 门槛；运行时变化必须提升指标版本并重新审批 Golden Fixture。
 
 V1 固定 `EMA50_D`、`EMA200_D`。敏感性实验不允许在基准 run 中修改周期。
 
@@ -107,12 +109,12 @@ donchian_low = min(previous_lows)
 
 1. 若 `x == 0`，输出 `Decimal("0")`。
 2. 用 `Decimal.from_float(x)` 得到该 binary64 的精确 Decimal 值。
-3. `e=floor(log10(abs(x)))`。
-4. 量化单位为 `Decimal(1).scaleb(e-14)`。
+3. 令 `d = Decimal.from_float(x)`，使用 `e = d.copy_abs().adjusted()` 取得十进制调整指数；禁止通过 float `log10`、字符串格式化或平台数学库推导指数。
+4. 量化单位为 `Decimal(1).scaleb(e - 14)`。
 5. 使用 `ROUND_HALF_EVEN` 量化到 15 位有效数字。
 6. 负零规范为 `Decimal("0")`。
 
-指标内部不舍入。仅在写入 Candidate 或与 Decimal close 比较前执行上述转换。Candidate 阶段没有 contract rule，因此 EMA/ATR Decimal 不按 tick 量化；tick 量化只属于 ExecutionPlan。
+指标内部不舍入。仅在写入 Candidate 或与 Decimal close 比较前执行上述转换。Candidate 阶段没有 contract rule，因此 EMA/ATR Decimal 不按 tick 量化；tick 量化只属于后续 Entry/Exit ExecutionPlan。
 
 ## 7. 1D 趋势状态
 
@@ -142,7 +144,7 @@ trend_state == BULL
 AND current_4h_close > donchian_high_previous_20
 ```
 
-输出：`market_view=LONG`、`setup_state=SETUP`、`market_reason=BULL_DONCHIAN_BREAKOUT`。
+输出：`market_view=LONG`、`market_reason=BULL_DONCHIAN_BREAKOUT`。
 
 ### 8.2 SHORT
 
@@ -151,17 +153,14 @@ trend_state == BEAR
 AND current_4h_close < donchian_low_previous_20
 ```
 
-输出：`market_view=SHORT`、`setup_state=SETUP`、`market_reason=BEAR_DONCHIAN_BREAKOUT`。
+输出：`market_view=SHORT`、`market_reason=BEAR_DONCHIAN_BREAKOUT`。
 
-### 8.3 NO_SETUP 与 NO_TRADE 的兼容语义
+### 8.3 NO_SETUP 的唯一 Canonical 语义
 
-此前规范已使用 `market_view=NO_TRADE`，本轮评审要求使用 `NO_SETUP`。为避免破坏既有审计语义，本设计不把风险拒绝混入市场结论，冻结为：
-
-- Canonical `market_view` 仍为 `LONG | SHORT | NO_TRADE`。
-- 新增 `setup_state = SETUP | NO_SETUP`。
-- `market_view=NO_TRADE` 时 `setup_state` 必须为 `NO_SETUP`。
-- LONG/SHORT 时 `setup_state` 必须为 `SETUP`。
-- `NO_SETUP` 不是风险、资金、持仓或 HALT 拒绝。
+- Canonical `market_view` 只能是 `LONG | SHORT | NO_SETUP`，不再存在 `setup_state` 字段。
+- `NO_SETUP` 只是确定性市场结论，不是风险、资金、持仓、HALT 或执行拒绝。
+- 旧版展示层可以把 `NO_SETUP` 映射为文案 `NO_TRADE`，但该兼容值不得写入 Canonical JSON、Candidate、哈希输入、确定性 ID 或任何下游领域对象。
+- 对旧数据的迁移只允许执行单向显示兼容映射；不得由 `NO_TRADE` 反推或重建新的 Candidate。
 
 无 setup 原因：
 
@@ -186,10 +185,10 @@ symbol
 decision_time_utc_ms
 decision_bar_open_time_utc_ms
 market_view
-setup_state
 market_reason
 entry_intent
-eligible_4h_open_utc_ms
+execution_anchor
+execution_delay_minutes
 execution_delay_version
 decision_close
 daily_close
@@ -210,8 +209,9 @@ created_by = PYTHON_DETERMINISTIC
 
 约束：
 
-- LONG/SHORT 的 `entry_intent=NEXT_4H_OPEN_MARKET`；NO_TRADE 为 null。
-- `eligible_4h_open_utc_ms` 是 decision bar close 后的下一 UTC 4H open。
+- LONG/SHORT 的 `entry_intent=SCHEDULED_MARKET`、`execution_anchor=NEXT_4H_OPEN`，并填写 `execution_delay_minutes` 与 `execution_delay_version`；`NO_SETUP` 的这四个执行意图字段全部为 null。
+- `execution_delay_minutes` 是由 `execution_delay_version` 冻结的整数分钟；基准为 `1`，敏感性值为 `0/1/2`。Candidate 仅表达计划意图，不提前绑定下一根开盘成交价。
+- `execution_anchor=NEXT_4H_OPEN` 表示 decision bar close 后的下一 UTC 4H open；实际可执行时刻由后续 EntryExecutionPlan 使用事件时钟计算。
 - Candidate 不含 `entry_price`、stop、TP、quantity、fee、margin、contract rule、maintenance margin、portfolio state 或 rejection。
 - Candidate 不含 acquisition manifest/hash、Index/audit hash 或 execution data hash。
 - 领域对象不可变，未知字段 fail closed。
@@ -225,8 +225,11 @@ cand_ + first_24_hex(SHA256(Canonical({
   symbol,
   decision_time_utc_ms,
   market_view,
-  setup_state,
   market_reason,
+  entry_intent,
+  execution_anchor,
+  execution_delay_minutes,
+  execution_delay_version,
   strategy_data_content_hash,
   indicator_config_hash,
   strategy_config_hash,
@@ -253,6 +256,8 @@ UNCLOSED_BAR
 ```
 
 ValidationFailure 保存 symbol、decision time、受影响数据范围、gap intervals、期望/实际版本和内容哈希；不保存方向。
+
+Candidate 与 ValidationFailure 的全部时间字段只能来自已验证市场数据的事件时钟：4H/1D bar 的 open/close time 或实验清单冻结的确定性边界。下载时间、进程时间、系统当前时间和其他本地 wall clock 不得进入领域对象、Canonical JSON 或确定性 ID；如报告外壳需要 `generated_at`，它只能作为非确定性展示元数据并明确排除在所有内容哈希之外。
 
 ## 11. Golden Fixture V1
 
@@ -285,9 +290,9 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 
 ### 11.4 决策边界样例
 
-- BULL 且 `close=donchian_high`：NO_TRADE/NO_SETUP。
+- BULL 且 `close=donchian_high`：NO_SETUP。
 - BULL 且 `close=donchian_high+最小 Decimal 单位`：LONG。
-- BEAR 且 `close=donchian_low`：NO_TRADE/NO_SETUP。
+- BEAR 且 `close=donchian_low`：NO_SETUP。
 - BEAR 且 `close=donchian_low-最小 Decimal 单位`：SHORT。
 - daily close 或 EMA 相等：NEUTRAL。
 
@@ -300,9 +305,9 @@ fixture 版本：`INDICATOR_GOLDEN_V1`。实现时必须将下列输入和预期
 ## 12. 2A 验收门槛
 
 1. Golden Fixture 全部逐字节通过。
-2. 参考纯 Python 实现与生产实现对随机有限 Decimal OHLC 序列逐点一致；EMA/ATR 允许的差异为 0 ULP。
+2. 参考纯 Python 实现与生产实现均采用锁定版本的标量 Python `float` 固定顺序递推；在相同解释器、平台和依赖锁下，对随机有限 Decimal OHLC 序列逐点一致，EMA/ATR 允许差异为 0 ULP。
 3. 相同输入顺序或输入容器顺序变化不改变输出。
 4. 所有 Candidate 均没有执行、仓位、成本或 contract 字段。
-5. ValidationFailure 与 NO_TRADE/NO_SETUP 不混用。
+5. ValidationFailure 与 `NO_SETUP` 不混用；Canonical 产物中不存在 `NO_TRADE` 或 `setup_state`。
 6. 2A 源码静态守卫证明不导入 GUI、AI、execution、risk、events、ledger 或交易客户端。
 7. 未经 2A 单独批准，不得开始 2B。
