@@ -63,6 +63,7 @@ STRATEGY_CONFIG_HASH = canonical_sha256(
         "trend_filter": "DAILY_EMA50_EMA200",
     }
 )
+SUPPORTED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
 
 
 def _failure(
@@ -115,6 +116,17 @@ def build_candidate(
     validation_state: VisibleValidationState | None = None,
 ) -> StrategyCandidate | ValidationFailure:
     assert_runtime_lock()
+    if symbol not in SUPPORTED_SYMBOLS:
+        return _failure(
+            reason=ValidationReason.INDICATOR_BOUNDARY_INVALID,
+            symbol=symbol,
+            decision_time_utc_ms=decision_time_utc_ms,
+            affected_interval="1d/4h",
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+            expected=(("supported_symbols", "BTCUSDT,ETHUSDT"),),
+            observed=(("symbol", symbol),),
+        )
     if validation_state is None:
         validation_state = VisibleValidationState()
     daily = _materialize(daily_bars)

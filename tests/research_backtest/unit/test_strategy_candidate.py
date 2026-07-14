@@ -174,6 +174,24 @@ def test_wrong_visible_interval_is_validation_failure():
     assert failure.reason.value == "INDICATOR_BOUNDARY_INVALID"
 
 
+def test_candidate_factory_rejects_symbols_outside_btc_eth_scope():
+    training_start, daily, four_hour, decision_time = _candidate_inputs()
+    daily = [replace(bar, symbol="XRPUSDT") for bar in daily]
+    four_hour = [replace(bar, symbol="XRPUSDT") for bar in four_hour]
+
+    failure = build_candidate(
+        symbol="XRPUSDT",
+        daily_bars=daily,
+        four_hour_bars=four_hour,
+        training_start_utc_ms=training_start,
+        decision_time_utc_ms=decision_time,
+        code_commit="abc123",
+        dependency_lock_hash="lock123",
+    )
+
+    assert failure.reason.value == "INDICATOR_BOUNDARY_INVALID"
+
+
 def test_gap_resets_segment_then_reports_warming_up_on_next_bar():
     training_start, daily, four_hour, _decision_time = _candidate_inputs()
     del four_hour[-3]
