@@ -55,3 +55,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.plans`, after the complete independent input-chain fixture existed and before the final plan domain/factory implementation.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_entry_plan_factory.py -q`
 - GREEN result: `5 passed`; final-plan-only construction, closed Entry schema, exact target/48h/cash formulas, deterministic formal identity, accepted-item quantity provenance, and the HALTED entry rejection passed over a complete replayable evidence chain.
+
+## Task 9 — Scheduled ExitIntent and ExitExecutionPlan
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_scheduled_exit_planning.py -q`
+- RED result: collection failed because `ScheduledExitReason` did not exist, proving the four-reason scheduled-exit domain and its separate plan path were absent.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_scheduled_exit_planning.py -q`
+- GREEN result: `5 passed`; the four scheduled reasons, strict next-minute target, price-free ExitIntent, HALT_EXIT allowance, exit-only Plan schema, unchanged position binding, and rule-rollover quantity rejection passed without protective-trigger evaluation.

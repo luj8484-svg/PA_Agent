@@ -114,6 +114,13 @@ class PositionMode(StrEnum):
     ONE_WAY = "ONE_WAY"
 
 
+class ScheduledExitReason(StrEnum):
+    TIME_EXIT = "TIME_EXIT"
+    TREND_EXIT = "TREND_EXIT"
+    HALT_EXIT = "HALT_EXIT"
+    EXPERIMENT_END = "EXPERIMENT_END"
+
+
 class MarketView(StrEnum):
     LONG = "LONG"
     SHORT = "SHORT"

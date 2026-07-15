@@ -109,3 +109,18 @@ def price_geometry(
         take_profit_fill,
         max(entry, stop_fill, take_profit_fill),
     )
+
+
+def expected_exit_price(
+    position_side: Side,
+    target_open: Decimal,
+    cost: CostModelSnapshot,
+    contract: ContractRuleCoverage,
+) -> Decimal:
+    _finite(target_open, "target_open")
+    one = Decimal("1")
+    if position_side is Side.LONG:
+        return floor_to_step(target_open * (one - cost.effective_slippage_rate), contract.tick_size)
+    if position_side is Side.SHORT:
+        return ceil_to_tick(target_open * (one + cost.effective_slippage_rate), contract.tick_size)
+    raise ValueError("unsupported position side")

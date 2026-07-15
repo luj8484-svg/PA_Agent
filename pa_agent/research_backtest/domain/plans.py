@@ -17,6 +17,7 @@ from pa_agent.research_backtest.domain.enums import (
     MarginMode,
     OrderType,
     PositionMode,
+    ScheduledExitReason,
     Side,
     TriggerBasis,
 )
@@ -27,6 +28,7 @@ from pa_agent.research_backtest.versions import (
     CONTRACT_MINIMUM_VERSION,
     ENTRY_EXECUTION_PLAN_SCHEMA_VERSION,
     EXECUTION_TIME_CONFIG_VERSION,
+    EXIT_EXECUTION_PLAN_SCHEMA_VERSION,
     FEE_MODEL_VERSION,
     FUNDING_RISK_CONFIG_VERSION,
     FUNDING_SCHEDULE_SNAPSHOT_SCHEMA_VERSION,
@@ -282,3 +284,108 @@ class EntryExecutionPlan:
 def entry_execution_plan(payload: dict[str, object]) -> EntryExecutionPlan:
     plan_id, digest = formal_identity("eplan_", payload)
     return EntryExecutionPlan(plan_id=plan_id, plan_content_hash=digest, **payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ExitExecutionPlan:
+    schema_version: str
+    plan_id: str
+    plan_content_hash: str
+    intent_id: str
+    condition_event_id: str
+    origin_candidate_id: str
+    position_id: str
+    computational_experiment_id: str
+    symbol: str
+    position_side: Side
+    scheduled_exit_reason: ScheduledExitReason
+    quantity: Decimal
+    condition_time_utc_ms: int
+    target_execution_time_utc_ms: int
+    plan_created_time_utc_ms: int
+    order_type: OrderType
+    trigger_basis: TriggerBasis
+    target_open_snapshot_id: str
+    reference_price: Decimal
+    expected_exit_fill_price: Decimal
+    expected_exit_fee: Decimal
+    contract_rule_mode: ContractRuleMode
+    contract_rule_coverage_id: str
+    contract_rule_coverage_content_hash: str
+    cost_model_snapshot_id: str
+    cost_model_snapshot_content_hash: str
+    target_minute_input_hash: str
+    position_snapshot_hash: str
+    plan_config_hash: str
+    code_commit: str
+    dependency_lock_hash: str
+    approximation_watermark: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != EXIT_EXECUTION_PLAN_SCHEMA_VERSION:
+            raise ValueError("unsupported ExitExecutionPlan schema")
+        for name in (
+            "intent_id",
+            "condition_event_id",
+            "origin_candidate_id",
+            "position_id",
+            "target_open_snapshot_id",
+            "contract_rule_coverage_id",
+            "cost_model_snapshot_id",
+        ):
+            require_nonempty_string(getattr(self, name), name)
+        if self.symbol not in {"BTCUSDT", "ETHUSDT"} or not isinstance(self.position_side, Side):
+            raise ValueError("invalid exit plan market identity")
+        if not isinstance(self.scheduled_exit_reason, ScheduledExitReason):
+            raise ValueError("ExitExecutionPlan only accepts scheduled reasons")
+        _decimal(self.quantity, "quantity", positive=True)
+        _decimal(self.reference_price, "reference_price", positive=True)
+        _decimal(self.expected_exit_fill_price, "expected_exit_fill_price", positive=True)
+        _decimal(self.expected_exit_fee, "expected_exit_fee")
+        for name in (
+            "condition_time_utc_ms",
+            "target_execution_time_utc_ms",
+            "plan_created_time_utc_ms",
+        ):
+            require_utc_ms(getattr(self, name), name)
+        if self.target_execution_time_utc_ms <= self.condition_time_utc_ms:
+            raise ValueError("exit target must be strictly after condition")
+        if self.plan_created_time_utc_ms != self.target_execution_time_utc_ms:
+            raise ValueError("exit plan creation time must equal target event time")
+        if self.order_type is not OrderType.MARKET_AT_1M_OPEN:
+            raise ValueError("unsupported exit order type")
+        if self.trigger_basis is not TriggerBasis.TRADE_1M_OPEN:
+            raise ValueError("unsupported exit trigger basis")
+        if self.contract_rule_mode is ContractRuleMode.UNAVAILABLE:
+            raise ValueError("unavailable contract cannot enter an exit plan")
+        expected_watermark = (
+            "VERIFIED"
+            if self.contract_rule_mode is ContractRuleMode.VERIFIED
+            else "APPROXIMATED_NOT_LIVE_ELIGIBLE"
+        )
+        if self.approximation_watermark != expected_watermark:
+            raise ValueError("exit plan approximation watermark contradicts contract mode")
+        for name in (
+            "computational_experiment_id",
+            "contract_rule_coverage_content_hash",
+            "cost_model_snapshot_content_hash",
+            "target_minute_input_hash",
+            "position_snapshot_hash",
+            "plan_config_hash",
+            "dependency_lock_hash",
+        ):
+            require_sha256(getattr(self, name), name)
+        if self.plan_config_hash != plan_config_hash(EXIT_EXECUTION_PLAN_SCHEMA_VERSION):
+            raise ValueError("exit plan config hash does not match frozen versions")
+        require_commit(self.code_commit)
+        verify_formal_identity(
+            self, id_field="plan_id", hash_field="plan_content_hash", prefix="xplan_"
+        )
+
+    def canonical_json(self) -> str:
+        return canonical_dumps(self)
+
+
+def exit_execution_plan(payload: dict[str, object]) -> ExitExecutionPlan:
+    plan_id, digest = formal_identity("xplan_", payload)
+    return ExitExecutionPlan(plan_id=plan_id, plan_content_hash=digest, **payload)

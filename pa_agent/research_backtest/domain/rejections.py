@@ -19,7 +19,7 @@ from pa_agent.research_backtest.domain.enums import (
     RejectionSubjectKind,
     ResearchStage,
 )
-from pa_agent.research_backtest.domain.intents import EntryIntent
+from pa_agent.research_backtest.domain.intents import EntryIntent, ExitIntent
 from pa_agent.research_backtest.versions import (
     CANONICAL_2B_VERSION,
     EXECUTION_REJECTION_SCHEMA_VERSION,
@@ -450,6 +450,20 @@ def entry_intent_subject_ref(intent: EntryIntent) -> EntryIntentSubjectRef:
         "intent_content_hash": intent.intent_content_hash,
     }
     return _subject(payload, EntryIntentSubjectRef)
+
+
+def exit_intent_subject_ref(intent: ExitIntent) -> ExitIntentSubjectRef:
+    payload = {
+        "schema_version": REJECTION_SUBJECT_REF_SCHEMA_VERSION,
+        "exit_intent_id": intent.intent_id,
+        "condition_event_id": intent.condition_event_id,
+        "position_id": intent.position_id,
+        "symbols": (intent.symbol,),
+        "origin_ids": (intent.condition_event_id, intent.position_id),
+        "condition_visible_input_hash": intent.condition_visible_input_hash,
+        "position_snapshot_hash": intent.position_snapshot_hash,
+    }
+    return _subject(payload, ExitIntentSubjectRef)
 
 
 def portfolio_batch_subject_ref(
