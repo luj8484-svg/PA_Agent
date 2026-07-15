@@ -1,9 +1,9 @@
 # 2B Codex 自我红队
 
-日期：2026-07-14
+日期：2026-07-15
 
 方法：逐项尝试构造经济非法但 Schema 可接受的对象、身份绕过、资金重复使用、未来数据泄漏、顺序偏置和范围越界。
-攻击场景数：`46`。红队后未关闭 BLOCKER：`0`。
+攻击场景数：`53`。红队后未关闭 BLOCKER：`0`。
 
 | # | Attack scenario | Expected invariant | Current design response | 验收矩阵覆盖 | Requirement ID | Test ID | 未覆盖时修订 |
 |---:|---|---|---|---|---|---|---|
@@ -22,7 +22,7 @@
 | 13 | 用 `now()` 让 plan_created/ID 每次不同 | event clock唯一 | created必须等于target；scope禁止clock | 是 | 2B-TIME-007 | UT-RT-013 | 已关闭 |
 | 14 | full dataset hash含未来数据，未来变化改历史对象 | decision/target visible hashes | Intent/Plan字段排除full interval hash | 是 | 2B-ID-003 | UT-RT-014 | 已关闭 |
 | 15 | 输入 list 顺序改变 scale/item输出 | 无领域顺序输入先排序 | `(symbol,result_id)` Canonical排序 | 是 | 2B-PORT-002 | UT-RT-015 | 已关闭 |
-| 16 | BTC_FIRST先耗尽现金，系统性拒绝ETH | 所有同刻先独立算再共同scale | batch completeness watermark；禁止sequential allocation | 是 | 2B-PORT-001/002/007 | UT-RT-016 | 已关闭 |
+| 16 | BTC_FIRST先耗尽现金，系统性拒绝ETH | 所有同刻先独立算再共同scale | 正式CompletenessSnapshot；禁止sequential allocation | 是 | 2B-PORT-001/002/007 | UT-RT-016 | 已关闭 |
 | 17 | ETH缩量后below minimum，把释放额度给BTC | scale只计算一次 | rejected item不触发重算 | 是 | 2B-PORT-004 | UT-RT-017 | 已关闭 |
 | 18 | LONG/SHORT directional gap 公式互换 | adverse方向按side冻结 | GAP-F01分别定义并有monotonic property | 是 | 2B-GAP-001/002 | UT-RT-018 | 已关闭 |
 | 19 | threshold相等因Decimal量化/`>=`随机拒绝 | equality必须接受 | 未量化P0/ATR，严格`>` | 是 | 2B-GAP-003 | UT-RT-019 | 已关闭 |
@@ -48,11 +48,18 @@
 | 39 | RT-39 用未来contract snapshot重建过去primary Plan | APPROX primary无lookahead | PRIOR_ONLY要求evidence≤query；HINDSIGHT独立 | 是 | 2B-RULE-008 | UT-RT-039 | gate+水印已关闭 |
 | 40 | RT-40 pending reserve>available被max(0)吞掉 | 非法AS必须暴露 | 先验证pending≤available；CASH-F22无max | 是 | 2B-RISK-007 | UT-RT-040 | DATA_INVALID已关闭 |
 | 41 | RT-41 base risk超1%被转quantity zero | risk cap有明reason | RISK-F20先判TOTAL_RISK_ALREADY_AT_LIMIT | 是 | 2B-RISK-008 | UT-RT-041 | priority早于qty已关闭 |
-| 42 | RT-42 无batch completeness只scale BTC | 同target完整集合 | PortfolioPlanningBatch+watermark是scaling前置 | 是 | 2B-PORT-007 | UT-RT-042 | partial batch拒绝已关闭 |
+| 42 | RT-42 无batch completeness只scale BTC | 同target完整集合 | CompletenessSnapshot+PortfolioPlanningBatch是scaling前置 | 是 | 2B-PORT-007 | UT-RT-042 | partial batch拒绝已关闭 |
 | 43 | RT-43 ExitIntent提前要求target step对齐 | target rule未知 | XI只验证positive+position equality；target才检step | 是 | 2B-LIFE-011 | UT-RT-043 | rollover fixture已关闭 |
 | 44 | RT-44 Contract/Cost字段变但content hash不变 | content hash必须自证 | 正式hash排除ID/hash后重算，Plan复制同名字段 | 是 | 2B-RULE-007 | UT-RT-044 | mutation fixture已关闭 |
 | 45 | RT-45 同reason在Entry/Exit得错误Disposition | disposition依赖subject+stage | 冻结联合映射，无RETRYABLE disposition | 是 | 2B-SCHEMA-011 | UT-RT-045 | matrix property已关闭 |
 | 46 | RT-46 伪造Candidate错ID/hash却用NO_SETUP reason降级 | 非法Candidate必须DATA_INVALID | CANDIDATE_NOT_ACTIONABLE仅与已验证NO_SETUP匹配 | 是 | 2B-LIFE-001 | UT-RT-046 | Candidate边界fixture已关闭 |
+| 47 | RT-47 同open配不同合法watermark导致Snapshot/Plan ID变化 | Snapshot身份只含open事实 | Snapshot hash排除watermark；Plan只引用Snapshot hash | 是 | 2B-SCHEMA-016,2B-TIME-013 | UT-RT-047 | identity invariant已关闭 |
+| 48 | RT-48 completeness只列BTC并遗漏同target ETH | expected/resolution必须双射 | 正式CompletenessSnapshot逐Intent唯一终态 | 是 | 2B-PORT-008 | UT-RT-048 | missing resolution DATA_INVALID |
+| 49 | RT-49 ScalingResult与另一个Batch配对 | Batch→Scaling链不可拼接 | Scaling保存并验证batch ID/hash与成功投影 | 是 | 2B-PORT-009 | UT-RT-049 | cross-batch DATA_INVALID |
+| 50 | RT-50 修改item_input_hash隐含输入但item仍通过 | 禁止不可自证opaque hash | V1删除item_input_hash；只认closed payload链 | 是 | 2B-SCHEMA-019 | UT-RT-050 | field不存在 |
+| 51 | RT-51 current_equity改变但valuation/equity evidence不变 | equity可重放 | 固定wallet+UPnL及eligible mark-open evidence | 是 | 2B-RISK-011 | UT-RT-051 | aggregate mismatch DATA_INVALID |
+| 52 | RT-52 open-risk/pending数字变但记录集合/hash不变 | 聚合逐记录自证 | AEB携带记录IDs/hashes与聚合重算 | 是 | 2B-RISK-012 | UT-RT-052 | aggregate mismatch DATA_INVALID |
+| 53 | RT-53 supplemental tests因不在acceptance被误判孤儿 | registry取五文档并集 | MASTER_TEST_REGISTRY_V1分类并双向比较 | 是 | 2B-ID-008,2B-SCOPE-006 | UT-RT-053 | supplemental正式登记 |
 
 ## 红队发现并关闭的 BLOCKER
 
@@ -78,6 +85,11 @@
 | B18 Account风险证据 | 只信聚合Decimal，max吞异常 | set hashes/model version、pending bound、base-risk先判 | RISK-006–009 |
 | B19 Exit quantity/rule rollover | XI使用未知target step | XI只验positive+position；target mismatch path invalid，不量化 | LIFE-011、GF-EXIT-RULE-ROLLOVER |
 | B20 配置/范围/调用语义 | hash漏版本、None/等待语义不定 | 精确config hash payload、explicit Snapshot/watermark、factory precondition | ID-006、TIME-008–011 |
+| B21 Snapshot与Watermark身份耦合 | 晚消费改变Snapshot/Plan ID | Snapshot hash彻底排除watermark；Watermark使用独立source identity | SCHEMA-016/017、RT-47 |
+| B22 Batch完整性只看成功结果 | 失败Intent可被静默遗漏并偏置缩量 | CompletenessSnapshot记录expected全集和逐Intent唯一终态；Scaling绑定Batch | SCHEMA-018、PORT-008/009、RT-48/49 |
+| B23 Accepted item opaque hash | item边界无法重算隐藏输入 | 删除item_input_hash；closed Schema和正式对象链为唯一身份 | SCHEMA-019、RT-50 |
+| B24 Account aggregate缺少可重放证据 | equity/risk/pending可与hash脱钩 | AEB记录集合、valuation basis、逐项聚合重放 | SCHEMA-020、RISK-011/012、RT-51/52 |
+| B25 测试注册只覆盖acceptance | supplemental测试被误判或文档声明不实现 | Master Registry取五文档Test ID并集并与pytest metadata双向相等 | ID-008、SCOPE-006、RT-53 |
 
 所有 BLOCKER 已在规格、需求矩阵和测试 ID 中关闭；剩余 BLOCKER：`0`。
 
@@ -90,7 +102,7 @@
 
 ## OPTIONAL
 
-1. 人工审核可要求把 100 个 Requirement 再按未来实现 PR 拆成多个编码批次，但不得改变公式或边界。
+1. 已批准的 114 个 Requirement 按实施计划拆成10个TDD Task，但不得改变公式或边界。
 2. 可增加形式化 JSON Schema 文件；若加入，它必须从本文字段生成并接受同一 Requirement 追踪，不能成为第二真相源。
 
 ## 最终红队结论

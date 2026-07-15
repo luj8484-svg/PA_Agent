@@ -1,11 +1,11 @@
 # 第二批 2B 规格冻结规范
 
-日期：2026-07-14
+日期：2026-07-15
 
-状态：`FROZEN_FOR_ONE_TIME_HUMAN_REVIEW`
+状态：`IMPLEMENTATION_APPROVED_AFTER_PREFLIGHT`
 
 上游基线：`fork/main@07004498a7091519a4fb08c323a1dde5b97ced6d`
-实现授权：未授权。本文只冻结设计；人工书面批准前不得编码。
+实现授权：上一轮14项语义BLOCKER已验收；本次5项preflight闭环经文档审计并合并 `fork/main` 后，直接按TDD进入2B编码，不再等待纯文档批准。
 
 ## 1. 权威性、目标与范围
 
@@ -86,12 +86,14 @@
 | RejectionSubjectRef | `sref_ + first_24_hex(subject_content_hash)` |
 | TargetMinuteOpenSnapshot | `tmopen_ + first_24_hex(snapshot_content_hash)` |
 | TargetEventWatermark | `tmark_ + first_24_hex(watermark_content_hash)` |
+| PortfolioBatchCompletenessSnapshot | `bcomplete_ + first_24_hex(completeness_content_hash)` |
 | PortfolioPlanningBatch | `pbatch_ + first_24_hex(batch_content_hash)` |
 | ContractRuleCoverage | `cr_ + first_24_hex(coverage_content_hash)` |
 | CostModelSnapshot | `cost_ + first_24_hex(snapshot_content_hash)` |
 | FundingScheduleSnapshot | `fsched_ + first_24_hex(schedule_content_hash)` |
 | FundingRiskConfigSnapshot | `frisk_ + first_24_hex(content_hash)` |
 | AccountPlanningSnapshot | `acct_ + first_24_hex(snapshot_hash)` |
+| AccountPlanningEvidenceBundle | `aeb_ + first_24_hex(bundle_content_hash)` |
 | ExitConditionSnapshot | `xcond_ + first_24_hex(condition_content_hash)` |
 | ExecutionTimeConfig | `etime_ + first_24_hex(config_content_hash)` |
 | PositionSizingResult | `size_ + first_24_hex(result_content_hash)` |
@@ -109,20 +111,22 @@
 | `RejectionSubjectRef.subject_content_hash` | 对应union payload全字段，排除 `subject_id,subject_content_hash` |
 | `PositionSizingResult/PortfolioScalingResult.result_content_hash` | 对应closed Schema全字段，排除 `result_id,result_content_hash` |
 | `intent_config_hash` | `{execution_time_config_id, execution_time_config_content_hash, entry_intent_schema_version, canonical_version}` |
-| `plan_config_hash` | `{execution_time_version,gap_version,price_geometry_version,fee_model_version,slippage_model_version,funding_schedule_version,funding_risk_version,sizing_version,scaling_version,contract_minimum_version,leverage_policy_version,rejection_priority_version,canonical_version,entry_or_exit_plan_schema_version,planning_phase_version}` |
+| `plan_config_hash` | `{execution_time_version,gap_version,price_geometry_version,fee_model_version,slippage_model_version,funding_schedule_version,funding_risk_version,sizing_version,scaling_version,batch_completeness_schema_version,batch_completeness_policy_version,account_evidence_bundle_schema_version,equity_model_version,valuation_basis_version,contract_minimum_version,leverage_policy_version,rejection_priority_version,canonical_version,entry_or_exit_plan_schema_version,planning_phase_version}` |
 | `rejection_config_hash` | `{rejection_schema_version,subject_union_schema_version,ordered_reason_priority_rows,ordered_subject_reason_stage_disposition_retry_rows,canonical_version}` |
-| `TargetMinuteOpenSnapshot.snapshot_content_hash` | `{schema_version,symbol,stream,open_time_utc_ms,open_price,source_event_id,source_stream_version,event_watermark_time_utc_ms,created_by,code_commit,dependency_lock_hash}` |
-| `TargetEventWatermark.watermark_content_hash` | `{schema_version,symbol,target_open_time_utc_ms,event_watermark_time_utc_ms,source_event_id,source_stream_version,created_by,code_commit,dependency_lock_hash}` |
-| `PortfolioPlanningBatch.batch_content_hash` | `{schema_version,eligible_time_utc_ms,ordered_entry_intent_ids,ordered_symbols,account_snapshot_id,account_snapshot_hash,target_open_snapshot_ids,batch_completeness_watermark,batch_config_hash,code_commit,dependency_lock_hash}` |
+| `TargetMinuteOpenSnapshot.snapshot_content_hash` | `{schema_version,symbol,stream,open_time_utc_ms,open_price,source_event_id,source_stream_version,created_by,code_commit,dependency_lock_hash}`；严格排除任何watermark字段 |
+| `TargetEventWatermark.watermark_content_hash` | `{schema_version,symbol,target_open_time_utc_ms,event_watermark_time_utc_ms,watermark_source_event_id,watermark_source_stream_version,created_by,code_commit,dependency_lock_hash}`；不要求open source event存在 |
+| `PortfolioBatchCompletenessSnapshot.completeness_content_hash` | `{schema_version,eligible_time_utc_ms,expected_entry_intent_ids,expected_symbols,ordered_resolution_refs,completeness_event_time_utc_ms,completeness_policy_version,source_event_id,code_commit,dependency_lock_hash}` |
+| `PortfolioPlanningBatch.batch_content_hash` | `{schema_version,eligible_time_utc_ms,completeness_snapshot_id,completeness_snapshot_content_hash,ordered_entry_intent_ids,ordered_resolution_refs,ordered_successful_sizing_result_ids,ordered_symbols,account_snapshot_id,account_snapshot_hash,target_open_snapshot_ids,batch_config_hash,code_commit,dependency_lock_hash}` |
 | `ContractRuleCoverage.coverage_content_hash` | 全部 union payload 字段，排除 `coverage_id,coverage_content_hash` |
 | `CostModelSnapshot.snapshot_content_hash` | 全部字段，排除 `snapshot_id,snapshot_content_hash` |
 | `FundingScheduleSnapshot.schedule_content_hash` | 第 8 节冻结的全部 schedule 字段，排除 `schedule_id,schedule_content_hash` |
 | `FundingRiskConfigSnapshot.content_hash` | 第 8 节冻结的全部 risk config 字段，排除 `config_id,content_hash` |
 | `AccountPlanningSnapshot.snapshot_hash` | 第 5.14 节全部字段，排除 `snapshot_id,snapshot_hash` |
+| `AccountPlanningEvidenceBundle.bundle_content_hash` | 第 5.15 节全部字段，排除 `bundle_id,bundle_content_hash` |
 | `ExitConditionSnapshot.condition_content_hash` | `{schema_version,origin_candidate_id,position_id,position_snapshot_hash,symbol,position_side,exit_quantity,scheduled_exit_reason,condition_time_utc_ms,condition_visible_input_hash,code_commit,dependency_lock_hash}` |
 | `ExecutionTimeConfig.config_content_hash` | `{schema_version,entry_delay_minutes,exit_delay_minutes,anchor_policy_version,version,canonical_version}` |
-| `PortfolioPlanningBatch.batch_config_hash` | `{batch_schema_version,completeness_policy_version,sorting_policy_version,planning_phase_version,canonical_version}` |
-| `AcceptedScalingItem.item_content_hash` | 第 5.12 节全部字段，排除 `item_id,item_content_hash` |
+| `PortfolioPlanningBatch.batch_config_hash` | `{batch_schema_version,completeness_snapshot_schema_version,completeness_policy_version,sorting_policy_version,planning_phase_version,account_evidence_bundle_schema_version,canonical_version}` |
+| `AcceptedScalingItem.item_content_hash` | 第 5.12 节全部closed Schema字段，排除 `item_id,item_content_hash`；V1不存在任何泛化或opaque input hash |
 | `RejectedScalingItem.item_content_hash` | 第 5.12 节全部字段，排除 `item_id,item_content_hash` |
 
 `PositionSizingResult.input_hash` 和 `PortfolioScalingResult.input_hash` 从 Schema 删除；正式字段和 result ID 已完整表达输入，禁止保存不能从对象自证的泛化 hash。
@@ -145,6 +149,8 @@ ProtectiveExitReason2C = STOP_TRIGGER | TP_TRIGGER | ESTIMATED_LIQUIDATION
 ApproximationDirection = PRIOR_ONLY_APPROXIMATION | HINDSIGHT_DIAGNOSTIC_APPROXIMATION
 ContractRuleReviewStatus = APPROVED_VERIFIED | APPROVED_PRIOR_ONLY | APPROVED_HINDSIGHT_DIAGNOSTIC
 PlanningPhase = POST_SAME_TIME_FUNDING_AND_SCHEDULED_EXITS_PRE_ENTRY_BATCH_V1
+ResolutionKind = SIZING_RESULT | ECONOMIC_REJECTION | EXECUTION_PATH_INVALID | EXPERIMENT_INVALID
+ValuationBasis = MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1
 ```
 
 Entry 与 Exit 是不同 Schema。Contract coverage、RejectionSubjectRef 和 portfolio item 都是 tagged union。禁止以一个大 Schema 加互斥 nullable 字段模拟联合类型。`RETRYABLE` 不是 disposition；可重试性只存在 `retry_allowed: bool`。
@@ -198,14 +204,15 @@ Plan factory 禁止接收完整 1m Kline，只接收下列已封闭 Snapshot：
 | open_price | Decimal | 是 | target minute open event | 有限且>0 |
 | source_event_id | str | 是 | event engine | 必须是 open-event identity；其 payload 只含 `symbol,stream,open_time_utc_ms,open_price,source_stream_version`，禁止依赖该 bar 的未来 HLCV/成交统计 |
 | source_stream_version | str | 是 | data stream manifest | 非空；只标识 open-event Schema/来源，不包含 bar content hash |
-| event_watermark_time_utc_ms | int | 是 | event engine | `>=open_time_utc_ms`；非 wall clock；同一 open event 下不因未来 HLCV 改变 |
 | created_by | str | 是 | 常量 | `PYTHON_DETERMINISTIC` |
 | code_commit | str | 是 | manifest | 格式合法 |
 | dependency_lock_hash | sha256 | 是 | manifest | 64小写hex |
 
 Schema 是 closed-world；`high,low,close,volume,quote_volume,trade_count,taker_volume,close_time,is_closed` 以及任何 bar-close metadata 都是禁止字段。`source_event_id=tmopen_source_+first_24_hex(SHA256(Canonical({symbol,stream,open_time_utc_ms,open_price,source_stream_version})))`，其中 `source_stream_version` 由数据流 manifest 冻结但不得编码未来 bar 内容。Plan 的 `reference_price`和 `target_minute_input_hash` 只能分别复制 `open_price`和 `snapshot_content_hash`。
 
-Snapshot 缺失时仍需要独立显式 watermark，因此 `TARGET_EVENT_WATERMARK_SCHEMA_V1` 字段全部必填：`schema_version,watermark_id,watermark_content_hash,symbol,target_open_time_utc_ms,event_watermark_time_utc_ms,source_event_id,source_stream_version,created_by=PYTHON_DETERMINISTIC,code_commit,dependency_lock_hash`。`watermark_id=tmark_+first24(watermark_content_hash)`，hash按第3.4节重算。Snapshot存在时，其watermark字段必须与独立Watermark一致；Snapshot缺失时，只能由该对象证明target已越过。
+Snapshot 身份只表达 open event 事实，不包含消费时间、水位或任何“何时看见”字段。同一 open event 在 target、target+1分钟或更晚消费时，Snapshot Canonical bytes、content hash、ID 以及所有消费它的 Plan `target_minute_input_hash` 必须完全一致。
+
+Snapshot 缺失时仍需要独立显式 watermark，因此 `TARGET_EVENT_WATERMARK_SCHEMA_V1` 字段全部必填：`schema_version,watermark_id,watermark_content_hash,symbol,target_open_time_utc_ms,event_watermark_time_utc_ms,watermark_source_event_id,watermark_source_stream_version,created_by=PYTHON_DETERMINISTIC,code_commit,dependency_lock_hash`。`watermark_source_event_id` 标识水位推进事件，不复用、不推导 open `source_event_id`；Snapshot 缺失时该对象仍可独立构造和验证。`watermark_id=tmark_+first24(watermark_content_hash)`，hash按第3.4节重算。Snapshot存在时只校验 symbol/target 与Watermark一致，不把Watermark字段复制进Snapshot；Snapshot缺失时，只能由该对象证明target已越过。
 
 ### 5.3 EntryExecutionPlan
 
@@ -220,8 +227,11 @@ EntryExecutionPlan 只能在目标 1m open 已可见后生成，并且是 portfo
 | candidate_id | str | 是 | EntryIntent | 不重新派生 |
 | computational_experiment_id | sha256 | 是 | 实验 manifest | acquisition hash 排除 |
 | portfolio_planning_batch_id | str | 是 | PortfolioPlanningBatch | 同 target batch |
+| portfolio_planning_batch_content_hash | sha256 | 是 | PortfolioPlanningBatch | 与batch对象一致 |
 | portfolio_scaling_result_id | str | 是 | PortfolioScalingResult | accepted item 唯一来源 |
+| portfolio_scaling_result_content_hash | sha256 | 是 | PortfolioScalingResult | 与scaling对象一致且绑定同batch |
 | accepted_scaling_item_id | str | 是 | AcceptedScalingItem | symbol/quantity一致 |
+| accepted_scaling_item_content_hash | sha256 | 是 | AcceptedScalingItem | 与scaling nested item一致 |
 | symbol | str | 是 | Intent | BTCUSDT/ETHUSDT |
 | side | Side | 是 | Intent | 必须与 Candidate 一致 |
 | decision_time_utc_ms | int | 是 | Intent | 事件时钟 |
@@ -491,10 +501,12 @@ UNAVAILABLE 必须产生 `CONTRACT_RULE_UNAVAILABLE`，不能创建 Plan。
 | schema_version | str | 是 | 常量 | `PORTFOLIO_SCALING_RESULT_SCHEMA_V1` |
 | result_id | str | 是 | Canonical | `scale_[0-9a-f]{24}`且内容匹配 |
 | result_content_hash | sha256 | 是 | 第3.4节 | 对象边界重算 |
+| portfolio_planning_batch_id | str | 是 | PortfolioPlanningBatch | 内容已验证且唯一 |
+| portfolio_planning_batch_content_hash | sha256 | 是 | PortfolioPlanningBatch | 与batch对象完全一致 |
 | eligible_time_utc_ms | int | 是 | batch key | 全部item相同target |
 | account_snapshot_id | str | 是 | AS | batch冻结 |
 | account_snapshot_hash | sha256 | 是 | AS | batch冻结完整内容hash |
-| ordered_input_result_ids | tuple[str] | 是 | sizing set | 按`(symbol,result_id)`排序且去重 |
+| ordered_input_result_ids | tuple[str] | 是 | batch successful sizing set | 必须逐项等于batch.`ordered_successful_sizing_result_ids` |
 | remaining_risk | Decimal | 是 | RISK-F21 | ≥0 |
 | deployable_cash | Decimal | 是 | CASH-F22 | ≥0 |
 | risk_scale | Decimal | 是 | SCALE-F23 | ≥0 |
@@ -505,7 +517,25 @@ UNAVAILABLE 必须产生 `CONTRACT_RULE_UNAVAILABLE`，不能创建 Plan。
 
 一个 item 因 minimum/zero 被拒绝后，其他 item 不重新放大，原 `final_scale` 不变。
 
-### 5.12 PortfolioPlanningBatch 与 nested scaling item
+### 5.12 PortfolioBatchCompletenessSnapshot、PortfolioPlanningBatch 与 nested scaling item
+
+`PORTFOLIO_BATCH_COMPLETENESS_SNAPSHOT_SCHEMA_V1` 是同target处理完成性的唯一证据。它证明所有 expected EntryIntent 都有唯一终态，而不是只枚举成功 sizing 的子集。
+
+| PortfolioBatchCompletenessSnapshot 字段 | 类型 | 必填 | 唯一来源 | 约束 |
+|---|---|---:|---|---|
+| schema_version | str | 是 | 常量 | `PORTFOLIO_BATCH_COMPLETENESS_SNAPSHOT_SCHEMA_V1` |
+| completeness_id | str | 是 | completeness_content_hash | `bcomplete_[0-9a-f]{24}`且内容匹配 |
+| completeness_content_hash | sha256 | 是 | 第3.4节 | 对象边界重算 |
+| eligible_time_utc_ms | int | 是 | target batch key | 非负且与全部Intent target一致 |
+| expected_entry_intent_ids | tuple[str] | 是 | experiment manifest+intent set | 按`(symbol,intent_id)`排序、非空、去重 |
+| expected_symbols | tuple[str] | 是 | expected intents | 与intent IDs一一对应，BTCUSDT/ETHUSDT去重升序 |
+| ordered_resolution_refs | tuple[ResolutionRef] | 是 | sizing/rejection results | 每个expected intent恰好一行，按`(symbol,entry_intent_id)`排序 |
+| completeness_event_time_utc_ms | int | 是 | event engine | `>=eligible_time_utc_ms`；证明全部终态已到齐 |
+| completeness_policy_version | str | 是 | 常量 | `PORTFOLIO_BATCH_COMPLETENESS_POLICY_V1` |
+| source_event_id | str | 是 | completeness event | 非空、非wall clock |
+| code_commit / dependency_lock_hash | str/sha256 | 是 | manifest | 格式合法 |
+
+每个 `ResolutionRef` 是 closed payload：`entry_intent_id,symbol,resolution_kind,resolution_object_id,resolution_content_hash`。`resolution_kind` 仅允许 `SIZING_RESULT,ECONOMIC_REJECTION,EXECUTION_PATH_INVALID,EXPERIMENT_INVALID`；每个 expected EntryIntent 必须出现且只能出现一次，额外、缺失、重复或终态/object kind不匹配均为 `DATA_INVALID`。只有 `SIZING_RESULT` 行进入共同缩量，其余终态仍保留在 completeness identity 中，禁止静默遗漏。
 
 | PortfolioPlanningBatch 字段 | 类型 | 必填 | 唯一来源 | 约束 |
 |---|---|---:|---|---|
@@ -513,12 +543,15 @@ UNAVAILABLE 必须产生 `CONTRACT_RULE_UNAVAILABLE`，不能创建 Plan。
 | batch_id | str | 是 | batch_content_hash | `pbatch_[0-9a-f]{24}` |
 | batch_content_hash | sha256 | 是 | 第3.4节 | 对象边界重算 |
 | eligible_time_utc_ms | int | 是 | 同target intents | 同target事件时刻 |
-| ordered_entry_intent_ids | tuple[str] | 是 | complete intent set | 按 `(symbol,intent_id)` 排序，非空 |
+| completeness_snapshot_id | str | 是 | PortfolioBatchCompletenessSnapshot | 内容已验证、target一致 |
+| completeness_snapshot_content_hash | sha256 | 是 | completeness snapshot | 完整复制并进入batch identity |
+| ordered_entry_intent_ids | tuple[str] | 是 | completeness expected set | 必须等于`expected_entry_intent_ids` |
+| ordered_resolution_refs | tuple[ResolutionRef] | 是 | completeness snapshot | 必须逐字节等于snapshot rows |
+| ordered_successful_sizing_result_ids | tuple[str] | 是 | SIZING_RESULT rows | 按resolution顺序投影，可为空 |
 | ordered_symbols | tuple[str] | 是 | intents | 一一对应，去重 |
 | account_snapshot_id | str | 是 | AccountPlanningSnapshot | 所有item共享 |
 | account_snapshot_hash | sha256 | 是 | AccountPlanningSnapshot.snapshot_hash | 完整复制 |
-| target_open_snapshot_ids | tuple[str] | 是 | open snapshots | 与symbols一一对应 |
-| batch_completeness_watermark | str | 是 | event engine | 证明该target所有可执行BTC/ETH Intent已收集 |
+| target_open_snapshot_ids | tuple[str] | 是 | successful sizing inputs | 仅与SIZING_RESULT rows一一对应；失败resolution不伪造Snapshot |
 | batch_config_hash | sha256 | 是 | 第3.4节 | 对应config payload重算 |
 | code_commit | str | 是 | manifest | 格式合法 |
 | dependency_lock_hash | sha256 | 是 | manifest | 64小写hex |
@@ -536,7 +569,6 @@ UNAVAILABLE 必须产生 `CONTRACT_RULE_UNAVAILABLE`，不能创建 Plan。
 | final_required_cash | Decimal | 是 | final quantity与保守reserve basis | 精确 |
 | step_size | Decimal | 是 | coverage | >0 |
 | minimum_status | str | 是 | minimum validator | `PASSED_MIN_QTY_AND_NOTIONAL` |
-| item_input_hash | sha256 | 是 | 精确payload | SHA256(Canonical(`{sizing_result_id,final_scale,step_size,min_qty,min_notional,entry_fill,unit_risk,planned_exit_notional_price_basis,funding_count,effective_adverse_rate_cap}`)) |
 
 | RejectedScalingItem 字段 | 类型 | 必填 | 唯一来源 | 约束 |
 |---|---|---:|---|---|
@@ -547,7 +579,9 @@ UNAVAILABLE 必须产生 `CONTRACT_RULE_UNAVAILABLE`，不能创建 Plan。
 | sizing_result_id | str | 是 | sizing result | 内容已校验 |
 | rejection_id | str | 是 | ExecutionRejection | 内容已校验 |
 
-nested item 有独立 ID，其完整 Canonical payload 作为 PortfolioScalingResult `item_results` 元素进入 result ID。一个 item 拒绝后另一个不得重新放大。PortfolioPlanningBatch 是 portfolio rejection 的稳定 subject，禁止临时拼接 subject ID。
+nested item 有独立 ID，其完整 Canonical payload 作为 PortfolioScalingResult `item_results` 元素进入 result ID。V1 禁止 `item_input_hash` 或其他无法由item closed Schema自行重算的opaque hash；额外输入若需持久化，必须成为正式字段并进入`item_content_hash`。一个 item 拒绝后另一个不得重新放大。PortfolioPlanningBatch 是 portfolio rejection 的稳定 subject，禁止临时拼接 subject ID。
+
+链式验证固定为：`PortfolioPlanningBatch → PortfolioScalingResult → AcceptedScalingItem → EntryExecutionPlan`。ScalingResult 的batch ID/hash必须匹配；其`ordered_input_result_ids`必须等于batch成功sizing投影；Accepted item必须属于该ScalingResult；Plan引用的batch/scaling/item必须逐级一致。跨batch拼接一律`DATA_INVALID`。
 
 ### 5.13 ExecutionTimeConfig
 
@@ -572,7 +606,15 @@ nested item 有独立 ID，其完整 Canonical payload 作为 PortfolioScalingRe
 | planning_phase | PlanningPhase | 是 | event engine | `POST_SAME_TIME_FUNDING_AND_SCHEDULED_EXITS_PRE_ENTRY_BATCH_V1` |
 | planning_phase_version | str | 是 | event-order config | `PLANNING_PHASE_V1` |
 | wallet_balance | Decimal | 是 | 上游Ledger snapshot | 单一经济钱包；有限且≥0 |
-| current_equity | Decimal | 是 | wallet+mark未实现PnL | 有限且>0才能新计划 |
+| unrealized_pnl | Decimal | 是 | valuation evidence | 有限，可正可负 |
+| current_equity | Decimal | 是 | `wallet_balance+unrealized_pnl` | 精确相等；有限且>0才能新计划 |
+| equity_model_version | str | 是 | valuation config | `ACCOUNT_EQUITY_MODEL_V1` |
+| equity_source_snapshot_id | str | 是 | valuation snapshot set | 非空、内容可验证 |
+| equity_source_content_hash | sha256 | 是 | valuation evidence | 与eligible time一致 |
+| valuation_basis | ValuationBasis | 是 | 常量 | `MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1` |
+| valuation_snapshot_set_hash | sha256 | 是 | valuation records | 与全部position valuation逐项一致 |
+| account_evidence_bundle_id | str | 是 | AccountPlanningEvidenceBundle | 内容已验证 |
+| account_evidence_bundle_content_hash | sha256 | 是 | Evidence Bundle | 完整复制并进入snapshot identity |
 | locked_initial_margin | Decimal | 是 | 已成交持仓分类 | ≥0 |
 | locked_fee_reserve | Decimal | 是 | 已成交持仓分类 | ≥0 |
 | locked_funding_reserve | Decimal | 是 | 已成交持仓分类 | ≥0 |
@@ -589,19 +631,36 @@ nested item 有独立 ID，其完整 Canonical payload 作为 PortfolioScalingRe
 | experiment_state_id | str | 是 | experiment state object | 非空 |
 | experiment_state_hash | sha256 | 是 | experiment state object | 内容已校验 |
 
-2B 校验 `available_balance` 必须与其派生公式一致，防止第二真相源。入口必须满足 `pending_plan_reserve<=available_balance`、risk非负、集合 hash/模型版本与聚合值证据一致。snapshot `event_time_utc_ms==PortfolioPlanningBatch.eligible_time_utc_ms`，phase 证明同刻 funding 和计划性 open exits 已反映，本 Entry batch 尚未反映；同 batch 所有 item 必须用完全同一 snapshot。若 2C 事件顺序改变，必须提升 planning phase 版本。
+2B 校验 `current_equity=wallet_balance+unrealized_pnl` 和 `available_balance` 派生公式，防止第二真相源。入口必须满足 `pending_plan_reserve<=available_balance`、risk非负、集合 hash/模型版本与聚合值证据一致。snapshot `event_time_utc_ms==PortfolioPlanningBatch.eligible_time_utc_ms`，valuation snapshot同刻且basis固定，phase 证明同刻 funding 和计划性 open exits 已反映，本 Entry batch 尚未反映；同 batch 所有 item 必须用完全同一 snapshot。若 2C 事件顺序或valuation basis改变，必须提升对应版本。
 
 `deployable_cash=available_balance-pending_plan_reserve`在证据校验通过后精确计算，禁止 `max(0,...)`。所有 reserve 是 wallet 内锁定分类，不是经济扣款。资金费只允许 Ledger 在 2C 对 wallet 产生一次经济变化；isolated margin view 是派生视图，不是第二账户。
+
+### 5.15 AccountPlanningEvidenceBundle 上游接口
+
+2B 不实现 Ledger、估值或账户 reducer，但 planning factory 必须同时接收不可变 `ACCOUNT_PLANNING_EVIDENCE_BUNDLE_SCHEMA_V1`，并用其逐项重放 AccountPlanningSnapshot 聚合值。只传一个hash字符串而没有记录集合，不构成证据。
+
+| 字段组 | 正式字段 | 约束 |
+|---|---|---|
+| 身份 | `schema_version,bundle_id,bundle_content_hash,event_time_utc_ms,planning_phase,planning_phase_version` | schema固定；time/phase与AS和batch一致；ID/hash按第3节重算 |
+| wallet/ledger | `wallet_ledger_source_id,wallet_ledger_source_content_hash,wallet_balance,locked_initial_margin,locked_fee_reserve,locked_funding_reserve` | 来源对象可重放；余额/locks有限且非负 |
+| valuation | `valuation_snapshot_ids,valuation_snapshot_content_hashes,valuation_snapshot_set_hash,valuation_basis,equity_model_version,equity_source_snapshot_id,equity_source_content_hash,unrealized_pnl,current_equity` | IDs/hashes同序；basis=`MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1`；`equity=wallet+UPnL` |
+| positions | `existing_position_record_ids,existing_position_record_content_hashes,existing_position_set_hash,existing_position_symbols` | 同序、去重、集合hash可重算 |
+| open risk | `open_risk_record_ids,open_risk_record_content_hashes,open_risk_model_version,open_risk_source_hash,existing_open_risk` | 模型版本固定；逐记录求和等于aggregate |
+| pending plans | `pending_plan_record_ids,pending_plan_record_content_hashes,pending_plan_set_hash,pending_plan_risk,pending_plan_reserve` | 逐记录risk/reserve求和等于aggregate |
+| experiment state | `experiment_state,experiment_state_id,experiment_state_hash` | RUNNING/HALTED且内容匹配 |
+| 结果与 provenance | `available_balance,code_commit,dependency_lock_hash` | available按CASH-F01重算；provenance格式合法 |
+
+planning factory 必须验证 Bundle 与 AccountPlanningSnapshot 的 wallet、valuation、position、open-risk、pending、experiment state、全部集合hash、聚合数值、event time和planning phase逐字段一致。任何记录缺失返回 `REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE/EXECUTION_PATH_INVALID`；证据完整但聚合值、ID/hash或公式不一致返回 `DATA_INVALID/EXPERIMENT_INVALID`。
 
 ## 6. 生命周期与状态转换
 
 | 转换 | 触发 | 输入 | 输出 | 不变量 | 失败 | 重试 | ID 规则 |
 |---|---|---|---|---|---|---|---|
 | Candidate→EntryIntent | 2A 输出 LONG/SHORT/NO_SETUP | 仅 Candidate、ExecutionTimeConfig、manifest identity | EntryIntent 或 Rejection | 不读 target/规则/成本/funding/账户/仓位/HALTED | 合法NO_SETUP→CANDIDATE_NOT_ACTIONABLE；其他非法Candidate→DATA_INVALID | 同输入不可得不同结果 | 账户状态改变不改 Intent ID |
-| EntryIntent→target event | target open 事件到达 | Intent、TargetMinuteOpenSnapshot、显式 watermark | 进入 planning 前置条件 | factory 不接收 Kline/HLCV | target 前调用是 API precondition error，不产生领域对象 | 到达后可调用 | Snapshot ID 只受 open-visible fields 影响 |
-| target→PositionSizingResult | target已到达且证据完整 | Intent、open snapshot、contract/cost/funding、AS | SizingResult 或 Rejection | 此时才检查 HALTED/existing position/风险证据 | 按第11节 | 由联合映射决定 | sizing result 尚不是 Plan |
-| SizingResults→PortfolioPlanningBatch | completeness watermark 证明同target集合完整 | 全部可执行 EntryIntents、open snapshots、同一 AS | PortfolioPlanningBatch | 不得BTC_FIRST/ETH_FIRST/分次调用 | BATCH_INCOMPLETE/DATA_INVALID | 缺证据不构造batch | batch ID 依赖完整有序集合 |
-| PortfolioPlanningBatch→PortfolioScalingResult | batch 完整且 AS phase/time 一致 | batch、全部 SizingResults | ScalingResult | 先同算后缩量；item拒绝后不再分配 | risk/cash/minimum/rejection items | 冻结batch不原地重试 | 输入集合与顺序规则进入ID |
+| EntryIntent→target event | target open 事件到达 | Intent、独立TargetMinuteOpenSnapshot与TargetEventWatermark | 进入 planning 前置条件 | Snapshot identity不含watermark/消费时间；factory不接收Kline/HLCV | target 前调用是 API precondition error，不产生领域对象 | 到达后可调用 | Snapshot ID 只受 open-event fields 影响 |
+| target→PositionSizingResult | target已到达且证据完整 | Intent、open snapshot、contract/cost/funding、AS+EvidenceBundle | SizingResult 或 Rejection | 此时才检查 HALTED/existing position/可重放账户证据 | 按第11节 | 由联合映射决定 | sizing result 尚不是 Plan |
+| Resolutions→Completeness→PortfolioPlanningBatch | completion event证明同target全部expected Intent有唯一终态 | 全部expected intents、Sizing/Rejection终态、open snapshots、同一AS | CompletenessSnapshot与PortfolioPlanningBatch | 失败终态也进证据；不得BTC_FIRST/ETH_FIRST/分次调用 | BATCH_INCOMPLETE/DATA_INVALID | 缺证据不构造batch | completeness和batch ID依赖完整有序resolution集合 |
+| PortfolioPlanningBatch→PortfolioScalingResult | batch 完整且 AS phase/time 一致 | batch、其successful SizingResults | ScalingResult | ordered inputs精确等于batch成功投影；item拒绝后不再分配 | risk/cash/minimum/rejection items | 冻结batch不原地重试 | ScalingResult绑定batch ID/hash |
 | AcceptedScalingItem→EntryPlan | ScalingResult 已完成 | batch、accepted item、全部已验证输入 | final EntryExecutionPlan | `quantity`唯一来自 accepted item | 任何反算不一致→DATA_INVALID | 否 | Plan ID 包含batch/scaling/item IDs |
 | Scheduled ExitCondition→ExitIntent | 上游计划性条件发生 | condition、position、delay config | ExitIntent | 仅四种 scheduled reason；HALTED不阻止 | protective reason→DATA_INVALID/Scope failure | condition/config变化才新Intent | condition/config 变化ID变 |
 | ExitIntent→ExitPlan | 严格未来 target open Snapshot 到达 | Intent、Snapshot/watermark、position recheck、coverage、cost | ExitPlan 或 Rejection | HALTED不阻止；quantity不偷偷量化 | target/data/rule/position mismatch | 由联合映射决定 | target/position/rule变化 ID 变化 |
@@ -754,7 +813,7 @@ reason 优先级从高到低冻结：
 | 7 | COST_MODEL_UNAVAILABLE | 无有效cost snapshot |
 | 8 | FUNDING_SCHEDULE_UNVERIFIED | schedule时间证据不完整 |
 | 9 | FUNDING_RISK_CONFIG_UNAVAILABLE | funding cap证据不完整 |
-| 10 | BATCH_INCOMPLETE | completeness watermark/同target集合不完整 |
+| 10 | BATCH_INCOMPLETE | CompletenessSnapshot缺失、expected/resolution集合不完整 |
 | 11 | POSITION_SNAPSHOT_CHANGED | Exit position在target前改变 |
 | 12 | POSITION_QUANTITY_RULE_MISMATCH | Exit quantity不符当前step |
 | 13 | EXPERIMENT_HALTED | 仅禁止新Entry |
@@ -807,7 +866,7 @@ Disposition 和 `retry_allowed` 不能只按 reason 全局映射；必须按 `(s
 6. ExitPlan 只能在 TargetMinuteOpenSnapshot 到达后构造；HALTED不改变此语义。
 7. funding 采用 `(entry,maxExit]`；同刻先 funding 后 exit。
 8. contract rule target 必须位于 `[from,to)`；`target==to` 过期。
-9. 同刻 BTC/ETH 以相同 eligible time、相同planning-phase account snapshot和completeness watermark组成一个 batch。
+9. 同刻 BTC/ETH 以相同 eligible time、相同planning-phase account snapshot和正式CompletenessSnapshot组成一个 batch。
 10. 跨日/月仅按 UTC 整数运算，不调用 timezone locale。
 11. split 标签不影响 Intent/Plan；但 target 不得越过实验 manifest 允许的 execution range。
 12. TargetMinuteOpenSnapshot和watermark必须是显式输入；仅watermark越过且Snapshot缺失时才产生TARGET_MINUTE_UNAVAILABLE。
@@ -820,6 +879,17 @@ Disposition 和 `retry_allowed` 不能只按 reason 全局映射；必须按 `(s
 ## 13. Golden Fixture 与 property-test 冻结
 
 编码前先写 fixture manifest，再写生产函数。必须包含 BTC LONG、ETH SHORT、gap 前/等于/超过、tick/step、minimum、7 次 funding、三种 contract mode、同时缩量、拒绝不再分配、0.5%、1%、wall clock、输入顺序、delay 身份和未来数据不变性。完整计划见 `../reviews/second-batch-2b-golden-fixture-plan.md`。
+
+### 13.1 MASTER_TEST_REGISTRY_V1
+
+唯一测试注册集合是以下五份文档中全部 Test ID 的去重并集：acceptance matrix、illegal-state matrix、time-boundary matrix、golden-fixture plan、red-team。分类固定为：
+
+1. Unit/acceptance：`UT-LIFE-*`,`UT-SCHEMA-*`,`UT-TIME-*`及其他acceptance `UT-*`；
+2. Supplemental：`UT-ILLEGAL-*`,`UT-TB-*`,`UT-GF-*`,`UT-RT-*`；
+3. Property：`PT-*`；
+4. Fixture：`GF-*`，它不是Test ID，不进入implemented test集合。
+
+每个实际pytest case必须声明唯一 `test_id` 和非空 `requirement_ids`。一个Requirement可映射多个Test ID，一个Property family可覆盖多个Requirement；禁止没有Requirement的孤儿测试，也禁止文档已登记但未实现的Test ID。CI唯一判定是 `documented_master_test_id_set == implemented_test_id_set`，不得只比较acceptance matrix。注册校验器必须在测试目录为空、登记ID缺失、实现孤儿ID、重复实现ID或Requirement不存在时失败。
 
 ## 14. Scope Guard 冻结
 
@@ -853,10 +923,15 @@ CONTRACT_APPROXIMATION_POLICY_V1
 COST_MODEL_SNAPSHOT_SCHEMA_V1
 POSITION_SIZING_RESULT_SCHEMA_V1
 PORTFOLIO_PLANNING_BATCH_SCHEMA_V1
+PORTFOLIO_BATCH_COMPLETENESS_SNAPSHOT_SCHEMA_V1
+PORTFOLIO_BATCH_COMPLETENESS_POLICY_V1
 PORTFOLIO_SCALING_RESULT_SCHEMA_V1
 ACCEPTED_SCALING_ITEM_SCHEMA_V1
 REJECTED_SCALING_ITEM_SCHEMA_V1
 ACCOUNT_PLANNING_SNAPSHOT_SCHEMA_V1
+ACCOUNT_PLANNING_EVIDENCE_BUNDLE_SCHEMA_V1
+ACCOUNT_EQUITY_MODEL_V1
+MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1
 PLANNING_PHASE_V1
 FUNDING_SCHEDULE_SNAPSHOT_SCHEMA_V1
 FUNDING_RISK_CONFIG_SNAPSHOT_V1
@@ -877,6 +952,7 @@ LEVERAGE_POLICY_V1_FIXED_1X
 2B_REJECTION_PRIORITY_V2
 2B_REJECTION_SUBJECT_DISPOSITION_V1
 2B_CANONICAL_VERSION_V1
+MASTER_TEST_REGISTRY_V1
 ```
 
 任何字段、枚举、公式、先后顺序、区间开闭、Decimal 量化或 ID 输入变化必须提升相应版本。仅文案拼写且不改变语义可不提升，但必须记录 docs commit。
@@ -904,7 +980,10 @@ LEVERAGE_POLICY_V1_FIXED_1X
 | 多错误如何选 | 收集事实后用priority V2，再按subject×reason×stage映射 |
 | Plan 是否修改账户 | 永不；只输出 required cash/risk |
 | EntryIntent是否读账户/HALTED | 否；两者只在target planning检查 |
-| 同target集合如何证明完整 | PortfolioPlanningBatch completeness watermark |
+| 同target集合如何证明完整 | PortfolioBatchCompletenessSnapshot逐Intent唯一resolution；失败终态也保留 |
+| Open Snapshot与Watermark身份 | 两个正式对象完全分离；Snapshot hash/ID不含watermark或消费时间 |
+| Account聚合如何自证 | AccountPlanningEvidenceBundle携带/引用完整可重放记录集合；AS只在逐项一致后接受 |
+| 测试集合如何闭合 | MASTER_TEST_REGISTRY_V1取五份文档Test ID并集，与pytest声明双向相等 |
 | exit fee/funding reserve basis | 三个冻结价格的max；仅保证价格包络内保守 |
 
 当前未决设计问题数量：`0`。如人工审核不同意任何答案，必须在编码前一次性修改本文、矩阵、版本和追踪；不得在编码中临时决定。
@@ -918,4 +997,4 @@ LEVERAGE_POLICY_V1_FIXED_1X
 - 自我红队：`../reviews/second-batch-2b-red-team.md`
 - 完整性审计：`../reviews/second-batch-2b-traceability-audit.md`
 
-未经人工书面批准，不得创建上述未来生产文件或任何 2B 测试文件。
+本次preflight文档审计通过并合并 `fork/main` 后，按批准的实施计划和强制TDD创建2B生产/测试文件；不得越过2B范围或开始2C。

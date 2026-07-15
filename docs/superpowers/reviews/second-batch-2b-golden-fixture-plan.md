@@ -1,6 +1,6 @@
 # 2B Golden Fixture 冻结计划
 
-状态：编码前 fixture manifest。Golden Fixture 计划数：`64`。本阶段不创建测试或最终数值 JSON；这里冻结输入结构、预期关系和身份要求。
+状态：preflight闭环后的编码前 fixture manifest。Golden Fixture 计划数：`71`。Fixture与独立Decimal参考实现必须先于对应生产公式。
 
 所有 fixture 文件未来使用 `tests/research_backtest/fixtures/2b/`，必须为 `2B_CANONICAL_VERSION_V1` Canonical JSON，并由不调用生产函数的独立 Decimal 参考实现复核。
 
@@ -70,6 +70,13 @@
 | GF-RISK-INVARIANT | 伪造floor后超0.5%或scale后超1%的result | DATA_INVALID/EXPERIMENT_INVALID，不是economic rejection | 2B-RISK-004/009 / UT-GF-062 |
 | GF-TARGET-PRECONDITION | Entry/Exit target前1ms调factory；watermark越过缺Snapshot | 前两者precondition error无领域对象；后者TARGET_MINUTE_UNAVAILABLE | 2B-TIME-008/009 / UT-GF-063 |
 | GF-CANDIDATE-NOSETUP | 合法NO_SETUP、非法MarketView、错Candidate ID/hash | 仅NO_SETUP返CANDIDATE_NOT_ACTIONABLE；后两者DATA_INVALID | 2B-LIFE-001 / UT-GF-064 |
+| GF-SNAPSHOT-WATERMARK-INDEPENDENT | 同open event分别在target、target+1m、target+N消费并配不同合法Watermark | Snapshot bytes/hash/ID及Plan ID全部相同 | 2B-SCHEMA-016,2B-TIME-013 / UT-GF-065 |
+| GF-WATERMARK-WITHOUT-OPEN | watermark source越过target但open source缺失 | Watermark独立有效；无Snapshot；TARGET_MINUTE_UNAVAILABLE | 2B-SCHEMA-017 / UT-GF-066 |
+| GF-COMPLETENESS-RESOLUTIONS | BTC sizing成功；ETH分别为economic/path/experiment终态；另含遗漏/重复变体 | 每expected Intent唯一resolution；仅BTC进入successful sizing投影；非法变体DATA_INVALID | 2B-SCHEMA-018,2B-PORT-008,2B-TIME-014 / UT-GF-067 |
+| GF-BATCH-SCALING-BINDING | 两个Batch及交叉配对ScalingResult/AcceptedItem/Plan | 仅同Batch完整链通过；交叉配对DATA_INVALID | 2B-PORT-009 / UT-GF-068 |
+| GF-SCALING-ITEM-SELF-PROVING | accepted item closed payload与尝试注入item_input_hash变体 | V1字段集中不存在item_input_hash；ID/hash由正式字段链重算 | 2B-SCHEMA-019 / UT-GF-069 |
+| GF-ACCOUNT-EVIDENCE-REPLAY | wallet、mark-open valuation、position/open-risk/pending records及aggregate mutation变体 | equity/available/risk/reserve/symbols全部重放一致；任一漂移DATA_INVALID | 2B-SCHEMA-020,2B-RISK-011/012,2B-TIME-015 / UT-GF-070 |
+| GF-MASTER-TEST-REGISTRY | 五文档Test IDs、Fixture IDs、空/遗漏/孤儿/重复pytest metadata | Test ID并集精确；GF排除；双向相等才PASS | 2B-ID-008,2B-SCOPE-006 / UT-GF-071 |
 
 ## Fixture 通用字段
 
@@ -88,6 +95,8 @@ cost_model_snapshot
 funding_schedule_snapshot
 funding_risk_config_snapshot
 account_planning_snapshot
+account_planning_evidence_bundle
+portfolio_batch_completeness_snapshot（Entry planning fixture）
 portfolio_planning_batch（Entry Plan fixture）
 input_order_variants
 expected_object_kind

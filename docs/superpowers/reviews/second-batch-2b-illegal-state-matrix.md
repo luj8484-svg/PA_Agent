@@ -1,6 +1,6 @@
 # 2B 非法状态矩阵
 
-状态：规格冻结候审。非法状态总数：`46`。所有条目都必须在对象边界或纯工厂 fail closed；不得靠 2C 修补。
+状态：preflight闭环后获准TDD实施。非法状态总数：`53`。所有条目都必须在对象边界或纯工厂 fail closed；不得靠 2C 修补。
 
 | Illegal ID | 非法状态/构造方式 | 被破坏的不变量 | 唯一预期结果 | Disposition | Requirement ID | Test ID |
 |---|---|---|---|---|---|---|
@@ -45,11 +45,18 @@
 | IS-039 | 使用未来contract evidence作primary APPROX | no lookahead | DATA_INVALID | EXPERIMENT_INVALID | 2B-RULE-008 | UT-ILLEGAL-039 |
 | IS-040 | pending reserve>available被max(0)吞掉 | 非法AS不得降级 | DATA_INVALID | EXPERIMENT_INVALID | 2B-RISK-007 | UT-ILLEGAL-040 |
 | IS-041 | base risk≥1%最终返回quantity zero | 明确risk cap reason | TOTAL_RISK_ALREADY_AT_LIMIT | CANDIDATE_REJECTED | 2B-RISK-008 | UT-ILLEGAL-041 |
-| IS-042 | 无completeness watermark时只scale BTC | 同target batch完整 | BATCH_INCOMPLETE | EXECUTION_PATH_INVALID | 2B-PORT-007 | UT-ILLEGAL-042 |
+| IS-042 | 无正式CompletenessSnapshot时只scale BTC | 同target batch完整 | BATCH_INCOMPLETE | EXECUTION_PATH_INVALID | 2B-PORT-007 | UT-ILLEGAL-042 |
 | IS-043 | ExitIntent提前用target step量化position | target rule尚未知 | DATA_INVALID | EXPERIMENT_INVALID | 2B-LIFE-011 | UT-ILLEGAL-043 |
 | IS-044 | Contract/Cost字段变但content hash不变 | hash内容闭包 | DATA_INVALID | EXPERIMENT_INVALID | 2B-RULE-007 | UT-ILLEGAL-044 |
 | IS-045 | 同reason在Entry/Exit subject上强制相同Disposition | 联合映射 | DATA_INVALID | EXPERIMENT_INVALID | 2B-SCHEMA-011 | UT-ILLEGAL-045 |
 | IS-046 | 非法Candidate Schema/ID/hash/MarketView被返CANDIDATE_NOT_ACTIONABLE | 该reason仅合法NO_SETUP | DATA_INVALID | EXPERIMENT_INVALID | 2B-LIFE-001 | UT-ILLEGAL-046 |
+| IS-047 | 同open event因合法watermark/消费时间不同产生不同Snapshot或Plan ID | Snapshot身份只含open事实 | DATA_INVALID | EXPERIMENT_INVALID | 2B-SCHEMA-016 | UT-ILLEGAL-047 |
+| IS-048 | Completeness只列BTC并遗漏同target ETH Intent | expected与resolution必须双射 | DATA_INVALID | EXPERIMENT_INVALID | 2B-PORT-008 | UT-ILLEGAL-048 |
+| IS-049 | ScalingResult引用另一个Batch或input IDs不等于batch成功投影 | Scaling唯一绑定Batch | DATA_INVALID | EXPERIMENT_INVALID | 2B-PORT-009 | UT-ILLEGAL-049 |
+| IS-050 | AcceptedScalingItem包含不可由closed字段重算的item_input_hash | 禁止opaque第二真相源 | DATA_INVALID | EXPERIMENT_INVALID | 2B-SCHEMA-019 | UT-ILLEGAL-050 |
+| IS-051 | current_equity改变但wallet/UPnL/valuation evidence不变 | equity必须可重放 | DATA_INVALID | EXPERIMENT_INVALID | 2B-RISK-011 | UT-ILLEGAL-051 |
+| IS-052 | open-risk或pending aggregate改变但记录集合/hash不变 | 聚合必须逐记录重算 | DATA_INVALID | EXPERIMENT_INVALID | 2B-RISK-012 | UT-ILLEGAL-052 |
+| IS-053 | Registry只读取acceptance导致Supplemental被判孤儿或文档ID遗漏 | master set必须取五文档并集 | DATA_INVALID | EXPERIMENT_INVALID | 2B-ID-008,2B-SCOPE-006 | UT-ILLEGAL-053 |
 
 ## 组合非法状态的优先级
 

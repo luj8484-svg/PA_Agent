@@ -1,9 +1,9 @@
 # 2B 需求追踪与验收矩阵
 
-状态：规格冻结候审；所有测试和实现路径均为计划，不代表已编码。
-Requirement 总数：`100`。每个 Requirement 至少对应一个唯一 Unit Test ID；Property 和 Golden 列给出独立覆盖或明确共享覆盖。测试命名冻结，编码时不得出现没有 Requirement ID 的测试。
+状态：preflight闭环后获准按TDD实施；所有实现路径仍须遵守冻结范围。
+Requirement 总数：`114`。每个 Requirement 至少对应一个唯一 Unit Test ID；Property 和 Golden 列给出独立覆盖或明确共享覆盖。测试命名冻结，编码时不得出现没有 Requirement ID 的测试。
 
-缩写：`EI` EntryIntent，`EP` EntryExecutionPlan，`XI` ExitIntent，`XP` ExitExecutionPlan，`ER` ExecutionRejection，`CR` ContractRuleCoverage，`AS` AccountPlanningSnapshot。
+缩写：`EI` EntryIntent，`EP` EntryExecutionPlan，`XI` ExitIntent，`XP` ExitExecutionPlan，`ER` ExecutionRejection，`CR` ContractRuleCoverage，`AS` AccountPlanningSnapshot，`BCS` PortfolioBatchCompletenessSnapshot，`AEB` AccountPlanningEvidenceBundle。
 
 ## A. 生命周期与 Schema（14）
 
@@ -96,7 +96,7 @@ Requirement 总数：`100`。每个 Requirement 至少对应一个唯一 Unit Te
 
 | Requirement ID | 需求描述 | 唯一不变量 | 数据来源 | 合法输入 | 非法输入 | 预期输出 | Failure/Rejection | 边界案例 | Unit Test | Property Test | Golden Fixture | 实现文件 | 状态 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 2B-PORT-001 | 同target intents在完整batch中scale | completeness watermark先于scale | batch | BTC+ETH完整 | sequential BTC | result | BATCH_INCOMPLETE | one/two items | UT-PORT-001 | PT-BATCH-COMPLETE | GF-BATCH-COMPLETE | `planning/portfolio.py` | PLANNED |
+| 2B-PORT-001 | 同target intents在完整batch中scale | 正式CompletenessSnapshot先于scale | batch | BTC+ETH完整 | sequential BTC | result | BATCH_INCOMPLETE | one/two items | UT-PORT-001 | PT-BATCH-COMPLETE | GF-BATCH-COMPLETE | `planning/portfolio.py` | PLANNED |
 | 2B-PORT-002 | 输入顺序无关 | sorted by symbol/result_id | set | permutations | BTC_FIRST bias | same bytes | DATA_INVALID | all permutations | UT-PORT-002 | PT-ORDER-INVARIANT | GF-SCALE-ORDER | `planning/portfolio.py` | PLANNED |
 | 2B-PORT-003 | risk/cash 取最小 scale | min(1,risk,cash) | AS+sizing | each limiter | max/first limiter | scale | DATA_INVALID | ties | UT-PORT-003 | PT-SCALE-BOUNDS | GF-SCALE-BTC-ETH | `planning/portfolio.py` | PLANNED |
 | 2B-PORT-004 | item 拒绝后不再分配 | scale 一次冻结 | scaled items | ETH below min | BTC re-expanded | result+ER | BELOW_MIN_QTY | one rejects | UT-PORT-004 | PT-NO-REDISTRIBUTION | GF-SCALE-NO-REDIST | `planning/portfolio.py` | PLANNED |
@@ -140,7 +140,7 @@ Requirement 总数：`100`。每个 Requirement 至少对应一个唯一 Unit Te
 | 2B-TIME-008 | target前factory调用为precondition error | 无None/等待对象 | event clock | target reached | before target | exception/no domain object | precondition | -1ms/exact | UT-TIME-008 | PT-NO-EARLY-FACTORY | GF-TARGET-PRECONDITION | `planning/factory.py` | PLANNED |
 | 2B-TIME-009 | watermark越过且Snapshot缺失才拒绝 | missing语义唯一 | explicit watermark | passed+missing | not-yet | ER | TARGET_MINUTE_UNAVAILABLE | exact watermark | UT-TIME-009 | PT-WATERMARK-MISSING | GF-TARGET-PRECONDITION | `planning/factory.py` | PLANNED |
 | 2B-TIME-010 | AS phase/time与batch一致 | post exits/pre entries | account event | exact target/phase | stale phase | batch/ER | DATA_INVALID | funding same time | UT-TIME-010 | PT-PLANNING-PHASE | GF-PLANNING-PHASE | `domain/accounts.py` | PLANNED |
-| 2B-TIME-011 | batch completeness watermark证明全量 | 顺序不能决定集合 | event engine | complete | first-call BTC | batch/ER | BATCH_INCOMPLETE | simultaneous | UT-TIME-011 | PT-BATCH-WATERMARK | GF-BATCH-COMPLETE | `domain/batches.py` | PLANNED |
+| 2B-TIME-011 | 正式CompletenessSnapshot证明全量 | 顺序不能决定集合 | event engine | complete | first-call BTC | batch/ER | BATCH_INCOMPLETE | simultaneous | UT-TIME-011 | PT-BATCH-COMPLETENESS-EVIDENCE | GF-BATCH-COMPLETE | `domain/batches.py` | PLANNED |
 | 2B-TIME-012 | APPROX证据时间不泄漏 | primary evidence≤query | archive | prior | future primary | coverage/ER | DATA_INVALID | equal timestamp | UT-TIME-012 | PT-APPROX-TIME | GF-APPROX-DIRECTIONS | `domain/contracts.py` | PLANNED |
 | 2B-COST-006 | exit fee reserve用max envelope | LONG TP高时reserve增 | price estimates | max basis | stop-only | reserve | DATA_INVALID | LONG/SHORT | UT-COST-006 | PT-EXIT-FEE-MAX | GF-RESERVE-BASIS | `planning/costs.py` | PLANNED |
 | 2B-COST-007 | funding reserve用同envelope | 不固定entry | prices+fund config | basis max | entry-only | reserve | DATA_INVALID | SHORT stop max | UT-COST-007 | PT-FUNDING-BASIS | GF-RESERVE-BASIS | `planning/funding.py` | PLANNED |
@@ -160,6 +160,25 @@ Requirement 总数：`100`。每个 Requirement 至少对应一个唯一 Unit Te
 | 2B-ID-006 | config hashes精确列字段 | 无“全部纯输入” | config payload | exact | omitted version | hash/ER | DATA_INVALID | each version mutation | UT-ID-006 | PT-CONFIG-HASH-CLOSURE | GF-CONTENT-HASH-CLOSURE | `domain/config.py` | PLANNED |
 | 2B-ID-007 | 所有upstream interface有正式ID/hash | 生产/消费字段一致 | all snapshots | matching | stale/missing | object/ER | DATA_INVALID | field mutation | UT-ID-007 | PT-UPSTREAM-HASH-CLOSURE | GF-CONTENT-HASH-CLOSURE | `domain/*` | PLANNED |
 
+## L. 实施前证据闭环增量（14）
+
+| Requirement ID | 需求描述 | 唯一不变量 | 数据来源 | 合法输入 | 非法输入 | 预期输出 | Failure/Rejection | 边界案例 | Unit Test | Property Test | Golden Fixture | 实现文件 | 状态 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2B-SCHEMA-016 | OpenSnapshot身份彻底排除watermark | 同open跨消费时间同bytes/hash/ID | open event | 任意合法watermark | watermark写入snapshot | Snapshot/Plan不变 | DATA_INVALID | target/target+1m | UT-SCHEMA-016 | PT-SNAPSHOT-CONSUMPTION-INVARIANT | GF-SNAPSHOT-WATERMARK-INDEPENDENT | `domain/market_inputs.py` | PLANNED |
+| 2B-SCHEMA-017 | TargetEventWatermark独立构造 | 缺open时仍有watermark identity | watermark event | 独立source event | 复用open source ID | Watermark | DATA_INVALID | Snapshot缺失 | UT-SCHEMA-017 | PT-WATERMARK-INDEPENDENT | GF-WATERMARK-WITHOUT-OPEN | `domain/market_inputs.py` | PLANNED |
+| 2B-SCHEMA-018 | BatchCompleteness是正式ID/hash对象 | expected全集和终态全集进入identity | expected intents+resolutions | 每Intent一终态 | missing/duplicate/extra | BCS | DATA_INVALID | BTC+ETH混合终态 | UT-SCHEMA-018 | PT-COMPLETENESS-UNIQUE-RESOLUTION | GF-COMPLETENESS-RESOLUTIONS | `domain/batches.py` | PLANNED |
+| 2B-SCHEMA-019 | AcceptedItem不存在opaque input hash | 身份可由closed object链自证 | scaling result | no input_hash | 注入item_input_hash | item | DATA_INVALID | one accepted | UT-SCHEMA-019 | PT-NO-OPAQUE-ITEM-HASH | GF-SCALING-ITEM-SELF-PROVING | `domain/scaling.py` | PLANNED |
+| 2B-SCHEMA-020 | AccountEvidenceBundle为正式接口 | 记录集合与聚合均可重放 | ledger/valuation/risk/pending records | 完整bundle | naked hashes | AEB/AS | REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE | empty sets | UT-SCHEMA-020 | PT-ACCOUNT-BUNDLE-CLOSED | GF-ACCOUNT-EVIDENCE-REPLAY | `domain/accounts.py` | PLANNED |
+| 2B-TIME-013 | Snapshot消费时间不进入身份 | target与晚消费结果相同 | open+watermarks | target/晚到 | consumption timestamp field | same IDs | DATA_INVALID | +0/+1/+N min | UT-TIME-013 | PT-SNAPSHOT-CONSUMPTION-INVARIANT | GF-SNAPSHOT-WATERMARK-INDEPENDENT | `domain/market_inputs.py` | PLANNED |
+| 2B-TIME-014 | completeness event必须在eligible之后 | completion证明全部终态已到齐 | event engine | event>=eligible | event<eligible | BCS/ER | DATA_INVALID | equal/-1ms | UT-TIME-014 | PT-COMPLETENESS-TIME | GF-COMPLETENESS-RESOLUTIONS | `domain/batches.py` | PLANNED |
+| 2B-TIME-015 | valuation/evidence时间与eligible一致 | 不用last-known或future price | mark open evidence | exact eligible | stale/future basis | AS/ER | DATA_INVALID | exact/+1ms | UT-TIME-015 | PT-VALUATION-ELIGIBLE | GF-ACCOUNT-EVIDENCE-REPLAY | `domain/accounts.py` | PLANNED |
+| 2B-PORT-008 | 每个expected Intent恰好一个resolution | 失败终态不得静默遗漏 | BCS | full bijection | missing ETH/duplicate BTC | BCS/ER | DATA_INVALID | 4 resolution kinds | UT-PORT-008 | PT-COMPLETENESS-UNIQUE-RESOLUTION | GF-COMPLETENESS-RESOLUTIONS | `domain/batches.py` | PLANNED |
+| 2B-PORT-009 | ScalingResult绑定唯一Batch | ordered inputs等于batch成功投影 | batch+sizing set | exact chain | cross-batch result | Scaling/ER | DATA_INVALID | one rejected Intent | UT-PORT-009 | PT-SCALING-BATCH-BINDING | GF-BATCH-SCALING-BINDING | `planning/portfolio.py` | PLANNED |
+| 2B-RISK-011 | current_equity由wallet+UPnL重放 | aggregate不能独立漂移 | AEB valuations | exact sum | equity mutation | AS/ER | DATA_INVALID | negative UPnL | UT-RISK-011 | PT-EQUITY-REPLAY | GF-ACCOUNT-EVIDENCE-REPLAY | `domain/accounts.py` | PLANNED |
+| 2B-RISK-012 | open-risk/pending聚合由记录重放 | 数字、集合hash、records一致 | AEB sets | exact aggregates | mutate aggregate only | AS/ER | DATA_INVALID | empty/one/many | UT-RISK-012 | PT-ACCOUNT-AGGREGATE-REPLAY | GF-ACCOUNT-EVIDENCE-REPLAY | `domain/accounts.py` | PLANNED |
+| 2B-ID-008 | Master Registry取五文档Test ID并集 | Fixture ID排除，Test ID去重完整 | frozen docs | all sources | acceptance-only | registry | DATA_INVALID | supplemental IDs | UT-ID-008 | PT-MASTER-REGISTRY-UNION | GF-MASTER-TEST-REGISTRY | `testing/registry.py` | PLANNED |
+| 2B-SCOPE-006 | Registry与pytest声明双向相等 | empty/missing/orphan/duplicate均失败 | docs+test metadata | exact sets | any mismatch | PASS/failure | DATA_INVALID | empty test dir | UT-SCOPE-006 | PT-MASTER-REGISTRY-BIJECTION | GF-MASTER-TEST-REGISTRY | `scripts/validate_2b_test_registry.py` | PLANNED |
+
 ## 测试到需求反向约束
 
-编码时每个测试函数 docstring/marker 必须包含其 `Requirement ID`。CI 生成两张集合：矩阵中的 Unit/Property/Golden Test ID 与测试目录实际声明的 Test ID；两集合必须完全相等。新增测试前先新增 Requirement，删除 Requirement 时同步删除测试和 fixture 引用。当前阶段测试代码数量为 `0`，这里只冻结未来 Test ID。
+编码时每个pytest case必须声明 `test_id` 与非空 `requirement_ids`。`MASTER_TEST_REGISTRY_V1` 从acceptance、illegal-state、time-boundary、golden-fixture、red-team五份文档收集全部Unit/Supplemental/Property Test ID并去重；`GF-*`仅是Fixture ID，不进入Test ID集合。CI比较documented master set与implemented set双向相等，禁止孤儿、遗漏和重复实现。

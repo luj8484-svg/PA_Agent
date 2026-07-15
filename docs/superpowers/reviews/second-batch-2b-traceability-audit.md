@@ -1,23 +1,24 @@
 # 2B 规格冻结完整性与追踪审计
 
-日期：2026-07-14
+日期：2026-07-15
 
 审计基线：`fork/main@07004498a7091519a4fb08c323a1dde5b97ced6d`
-结论：候选冻结包内部完整；等待人工一次性审核。未授权编码。
+结论：上一轮14项BLOCKER与本轮5项preflight均闭环；文档审计通过后获准直接按TDD实施2B。
 
 ## 1. 交付计数
 
 | 项目 | 数量 | 权威文件 |
 |---|---:|---|
-| Requirement/主验收矩阵行 | 100 | `second-batch-2b-acceptance-matrix.md` |
-| 主 Unit Test ID | 100 | 同上 |
-| Property Test 映射 | 100 行均有 | 同上 |
-| Golden Fixture 映射 | 100 行均有 | 同上 |
-| 非法状态 | 46 | `second-batch-2b-illegal-state-matrix.md` |
-| 时间边界案例 | 30 | `second-batch-2b-time-boundary-matrix.md` |
-| Golden Fixture 计划 | 64 | `second-batch-2b-golden-fixture-plan.md` |
-| 红队攻击场景 | 46 | `second-batch-2b-red-team.md` |
-| 红队 BLOCKER | 累计20个发现、20个关闭、0个未关闭（本轮14/14关闭） | 同上 |
+| Requirement/主验收矩阵行 | 114 | `second-batch-2b-acceptance-matrix.md` |
+| 主 Unit Test ID | 114 | 同上 |
+| Property Test 映射 | 114行、109个唯一family | 同上 |
+| Golden Fixture 映射 | 114行均有 | 同上 |
+| 非法状态 | 53 | `second-batch-2b-illegal-state-matrix.md` |
+| 时间边界案例 | 35 | `second-batch-2b-time-boundary-matrix.md` |
+| Golden Fixture 计划 | 71 | `second-batch-2b-golden-fixture-plan.md` |
+| 红队攻击场景 | 53 | `second-batch-2b-red-team.md` |
+| MASTER_TEST_REGISTRY_V1 | 435个唯一Test ID | 五文档并集；GF Fixture ID排除 |
+| 红队 BLOCKER | 累计25个发现、25个关闭、0个未关闭（本轮5/5关闭） | 同上 |
 | 未决设计问题 | 0 | frozen spec 第16节 |
 
 ## 2. Requirement 分类
@@ -25,18 +26,18 @@
 | Prefix | 数量 | 设计入口 | 测试入口 |
 |---|---:|---|---|
 | 2B-LIFE | 11 | Spec 6 | Acceptance A/K |
-| 2B-SCHEMA | 15 | Spec 4–5 | Acceptance A/K |
-| 2B-TIME | 12 | Spec 7/12 | Acceptance B/K、Time matrix |
+| 2B-SCHEMA | 20 | Spec 4–5 | Acceptance A/K/L |
+| 2B-TIME | 15 | Spec 7/12 | Acceptance B/K/L、Time matrix |
 | 2B-GAP | 4 | GAP-F01、Spec 10 | Acceptance C |
 | 2B-COST | 7 | PRICE/COST formulas | Acceptance D/K |
 | 2B-FUND | 9 | Spec 8 | Acceptance E/K |
 | 2B-RULE | 9 | Spec 5.8/9 | Acceptance F/K |
-| 2B-RISK | 10 | RISK/CASH formulas、Spec 5.14 | Acceptance G/K |
+| 2B-RISK | 12 | RISK/CASH formulas、Spec 5.14/5.15 | Acceptance G/K/L |
 | 2B-QTY | 4 | QTY/MIN formulas | Acceptance G |
-| 2B-PORT | 7 | SCALE formulas | Acceptance H/K |
-| 2B-ID | 7 | Spec 3 | Acceptance I/K |
-| 2B-SCOPE | 5 | Spec 14 | Acceptance J |
-| 合计 | 100 | 全覆盖 | 全覆盖 |
+| 2B-PORT | 9 | SCALE formulas、CompletenessSnapshot | Acceptance H/K/L |
+| 2B-ID | 8 | Spec 3/13.1 | Acceptance I/K/L |
+| 2B-SCOPE | 6 | Spec 13.1/14 | Acceptance J/L |
+| 合计 | 114 | 全覆盖 | 全覆盖 |
 
 ## 3. 需求→设计→测试链
 
@@ -51,7 +52,22 @@ Requirement ID
   -> planned implementation file
 ```
 
-未来测试函数必须声明 Requirement ID；CI 比较“矩阵 Test ID 集合”和“测试声明 Test ID 集合”完全相等。非法状态、时间边界和红队测试作为主 Requirement 的附加 Test ID，不创造没有 Requirement 的独立语义。
+每个pytest case必须声明唯一`test_id`与非空`requirement_ids`。CI按`MASTER_TEST_REGISTRY_V1`收集五文档全部Unit/Supplemental/Property Test ID并与实现集合双向比较；Fixture `GF-*`不属于Test ID。非法状态、时间边界、Golden和红队测试作为主Requirement的补充验证，不创造孤儿语义。
+
+### 3.1 MASTER_TEST_REGISTRY_V1 统计
+
+| Registry分类/来源 | 唯一Test ID数 | 是否进入master set |
+|---|---:|---:|
+| Acceptance Unit `UT-*` | 114 | 是 |
+| Acceptance Property `PT-*` | 109 | 是 |
+| Illegal supplemental `UT-ILLEGAL-*` | 53 | 是 |
+| Time supplemental `UT-TB-*` | 35 | 是 |
+| Golden supplemental `UT-GF-*` | 71 | 是 |
+| Red-team supplemental `UT-RT-*` | 53 | 是 |
+| documented_master_test_id_set | 435 | 是，以上去重并集 |
+| Fixture `GF-*` | 71 | 否；仅fixture identity |
+
+实现校验器必须证明 `documented_master_test_id_set == implemented_test_id_set`，并对空测试目录、缺登记ID、孤儿ID、重复实现ID、空Requirement映射逐项fail closed。
 
 ## 4. 字段唯一来源审计
 
@@ -59,16 +75,18 @@ Requirement ID
 |---|---|---|
 | Candidate side/time/ATR/close | 2A StrategyCandidate | 2B 重新计算趋势/方向 |
 | Intent target | TIME-F01/F02 + delay config | 搜索下一个现存 bar、wall clock |
-| Plan reference price/input hash | TargetMinuteOpenSnapshot.open_price/content hash | 完整Kline、mark/index/future HLCV |
+| Plan reference price/input hash | TargetMinuteOpenSnapshot.open_price/content hash；严格不含watermark/消费时间 | 完整Kline、mark/index/future HLCV、Watermark identity |
+| Target arrival/missing evidence | 独立TargetEventWatermark及其watermark source event | open source event假设、Snapshot内嵌watermark |
 | Contract tick/step/minimum | ContractRuleCoverage | 当前 exchangeInfo 静默回填 |
 | Fee/slippage | CostModelSnapshot | account/API 动态查询 |
 | Funding count | FundingScheduleSnapshot windows | 固定×6/×7 |
 | Funding rate cap | FundingRiskConfigSnapshot | CostModel、未来funding记录 |
 | Quantity | sizing→complete batch→scaling→AcceptedScalingItem | Plan自行缩量、minimum向上取整 |
-| Available balance | AS 派生公式 | 任意独立外部字段 |
-| Pending cash/risk | AS pending_plan_reserve/risk | 重复包含在 available/existing open risk |
+| Account equity/valuation | AEB wallet+eligible mark-open valuation records；`equity=wallet+UPnL` | last-known/trade/close价、naked aggregate |
+| Available balance | AEB ledger/lock records经AS派生公式 | 任意独立外部字段 |
+| Pending cash/risk | AEB pending records逐项聚合 | 重复包含在 available/existing open risk、naked aggregate |
 | Continuity/data validity | 上游已验证 inputs/watermark | 全局历史 bool |
-| Batch completeness | PortfolioPlanningBatch watermark | 第一次调用/BTC_FIRST |
+| Batch completeness | PortfolioBatchCompletenessSnapshot expected全集+逐Intent唯一终态 | 第一次调用/BTC_FIRST/仅成功SizingResults |
 | Object identity | 第3节正式ID/content hash payload | 外部 mutable/泛化 input hash |
 
 ## 5. 状态唯一来源审计
@@ -77,8 +95,8 @@ Requirement ID
 - Intent、Plan、Rejection 均 immutable；不存在 `status` mutable 字段。
 - Plan 是否接受由 final object 或 Rejection tagged output 表达，不在 Plan 内再保存 accepted bool。
 - Contract mode 由 tagged union 表达，不用 nullable rule fields。
-- Scaling item 由两个closed payload表达，各有独立ID/hash，完整payload进ScalingResult ID。
-- Account snapshot 来自上游一次性快照；2B 不产生新账户状态。
+- Scaling item 由两个closed payload表达，各有独立ID/hash，完整payload进ScalingResult ID；不存在item_input_hash。
+- Account snapshot 与AccountPlanningEvidenceBundle逐项重放一致；2B 不产生Ledger、估值或新账户状态。
 - 计划性退出由 ExitConditionSnapshot提供；protective reason仅属于2C。
 - HALTED只是Entry planning gate，不是Exit gate。
 - 证据缺失是EXECUTION_PATH_INVALID，不是经济CANDIDATE_REJECTED。
@@ -96,7 +114,12 @@ Requirement ID
 | 7 | Account phase与事件顺序一致 | PASS | AS time=batch eligible；phase=post same-time funding/exits, pre-entry batch |
 | 8 | reserve不低估冻结包络内现金需求 | PASS | PRICE-F10取entry/stop/TP max；fee与funding reserve共用该basis |
 | 9 | APPROX不使用未来证据 | PASS | primary只PRIOR_ONLY，evidence≤query；HINDSIGHT隔离Paper/Live/OOS |
-| 10 | 所有upstream interface有正式ID/hash | PASS | TargetOpen/Batch/FundingSchedule/FundingRisk/Account/ExitCondition/ExecutionTime/Contract/Cost/items均在Spec 3.3/3.4 |
+| 10 | 所有upstream interface有正式ID/hash | PASS | TargetOpen/Watermark/Completeness/Batch/AEB/Funding/Account/ExitCondition/ExecutionTime/Contract/Cost/items均在Spec 3.3/3.4 |
+| 11 | OpenSnapshot身份与Watermark身份分离 | PASS | snapshot hash字段集不含watermark；Watermark使用独立source event；晚消费不改Plan ID |
+| 12 | Batch expected全集与resolution全集一致 | PASS | CompletenessSnapshot要求逐expected Intent唯一终态；失败终态不得遗漏 |
+| 13 | ScalingResult与Batch、AcceptedItem、Plan链一致 | PASS | Scaling保存batch ID/hash且input IDs等于batch成功投影；Plan逐级复制ID/hash |
+| 14 | Account equity与风险聚合证据一致 | PASS | AEB携带wallet/valuation/position/open-risk/pending记录；AS全部aggregate可重放 |
+| 15 | Master Registry与全部文档测试来源一致 | PASS | 114 Unit+109 Property+212 Supplemental=435唯一Test IDs；GF Fixture排除 |
 
 ### 6.1 本轮 14 项 BLOCKER 闭环追踪
 
@@ -117,7 +140,17 @@ Requirement ID
 | 13 | 2B-LIFE-011 | ExitIntent quantity/target rule check | IS-043 | TB-030 | UT-LIFE-011; PT-EXIT-NO-REQUANTIZE | GF-EXIT-RULE-ROLLOVER | RT-43 | `planning/factory.py` | CLOSED |
 | 14 | 2B-TIME-008, 2B-TIME-009, 2B-TIME-010, 2B-TIME-011, 2B-ID-006 | explicit inputs/config hashes/preconditions | IS-034/042 | TB-007–009/023–027 | UT-TIME-008–011,UT-ID-006; PT-CONFIG-HASH-CLOSURE | GF-TARGET-PRECONDITION/GF-BATCH-COMPLETE | RT-34/42 | `domain/config.py`,`planning/factory.py` | CLOSED |
 
-### 6.2 正式对象 ID/hash 索引
+### 6.2 本轮5项 implementation-preflight闭环追踪
+
+| B | Requirement | Schema/Invariant | Illegal | Time | Unit/Property | Golden | Red | Future file | Status |
+|---:|---|---|---|---|---|---|---|---|---|
+| 21 | 2B-SCHEMA-016,2B-SCHEMA-017,2B-TIME-013 | OpenSnapshot/TargetEventWatermark身份分离 | IS-047 | TB-031/032/033 | UT-SCHEMA-016/017,UT-TIME-013; PT-SNAPSHOT-CONSUMPTION-INVARIANT | GF-SNAPSHOT-WATERMARK-INDEPENDENT/GF-WATERMARK-WITHOUT-OPEN | RT-47 | `domain/market_inputs.py` | CLOSED |
+| 22 | 2B-SCHEMA-018,2B-PORT-008,2B-PORT-009,2B-TIME-014 | CompletenessSnapshot+Batch→Scaling binding | IS-048/049 | TB-034 | UT-SCHEMA-018,UT-PORT-008/009; PT-COMPLETENESS-UNIQUE-RESOLUTION | GF-COMPLETENESS-RESOLUTIONS/GF-BATCH-SCALING-BINDING | RT-48/49 | `domain/batches.py`,`planning/portfolio.py` | CLOSED |
+| 23 | 2B-SCHEMA-019 | AcceptedScalingItem closed identity；无opaque hash | IS-050 | N/A | UT-SCHEMA-019; PT-NO-OPAQUE-ITEM-HASH | GF-SCALING-ITEM-SELF-PROVING | RT-50 | `domain/scaling.py` | CLOSED |
+| 24 | 2B-SCHEMA-020,2B-RISK-011,2B-RISK-012,2B-TIME-015 | AccountPlanningEvidenceBundle+equity/aggregate replay | IS-051/052 | TB-035 | UT-SCHEMA-020,UT-RISK-011/012; PT-ACCOUNT-AGGREGATE-REPLAY | GF-ACCOUNT-EVIDENCE-REPLAY | RT-51/52 | `domain/accounts.py` | CLOSED |
+| 25 | 2B-ID-008,2B-SCOPE-006 | MASTER_TEST_REGISTRY_V1五文档并集/双向集合 | IS-053 | N/A | UT-ID-008,UT-SCOPE-006; PT-MASTER-REGISTRY-BIJECTION | GF-MASTER-TEST-REGISTRY | RT-53 | `testing/registry.py`,`scripts/validate_2b_test_registry.py` | CLOSED |
+
+### 6.3 正式对象 ID/hash 索引
 
 | 正式对象/union payload | 正式身份/内容字段 |
 |---|---|
@@ -134,27 +167,29 @@ Requirement ID
 | PortfolioBatchSubjectRef | `subject_id,subject_content_hash` |
 | TargetMinuteOpenSnapshot | `snapshot_id,snapshot_content_hash` |
 | TargetEventWatermark | `watermark_id,watermark_content_hash` |
+| PortfolioBatchCompletenessSnapshot | `completeness_id,completeness_content_hash` |
 | PortfolioPlanningBatch | `batch_id,batch_content_hash` |
 | FundingScheduleSnapshot | `schedule_id,schedule_content_hash` |
 | FundingRiskConfigSnapshot | `config_id,content_hash` |
 | AccountPlanningSnapshot | `snapshot_id,snapshot_hash` |
+| AccountPlanningEvidenceBundle | `bundle_id,bundle_content_hash` |
 | ExitConditionSnapshot | `condition_event_id,condition_content_hash` |
 | ExecutionTimeConfig | `config_id,config_content_hash` |
 | ContractRuleCoverage | `coverage_id,coverage_content_hash` |
 | CostModelSnapshot | `snapshot_id,snapshot_content_hash` |
 | PositionSizingResult | `result_id,result_content_hash`；不保存泛化input_hash |
 | PortfolioScalingResult | `result_id,result_content_hash`；不保存泛化input_hash |
-| AcceptedScalingItem | `item_id,item_content_hash`；另有可重算`item_input_hash` |
+| AcceptedScalingItem | `item_id,item_content_hash`；V1无任何item_input_hash |
 | RejectedScalingItem | `item_id,item_content_hash` |
 
 精确 hash payload在 frozen spec 3.4；生产者与Plan/Rejection消费者使用同名正式字段，禁止别名或外部泛化hash。
 
-## 7. 提交前 12 项完整性检查
+## 7. 提交前 13 项完整性检查
 
 | # | 检查 | 结果 | 证据 |
 |---:|---|---|---|
-| 1 | 每个 Requirement 至少一个测试 | PASS | 100/100 行有 Unit Test ID |
-| 2 | 每个测试至少一个 Requirement | PASS by design | Test ID 只能从矩阵/专项矩阵生成；未来 CI 双集合校验 |
+| 1 | 每个 Requirement 至少一个测试 | PASS | 114/114 行有 Unit Test ID |
+| 2 | 每个测试至少一个 Requirement | PASS by design | 435个master Test ID均映射已有Requirement；未来pytest metadata强制验证 |
 | 3 | 每个领域字段唯一来源 | PASS | Spec 5 + 本文第4节 |
 | 4 | 每个状态只有一个真相源 | PASS | 本文第5节 |
 | 5 | 每个时间字段来自事件时钟 | PASS | Spec 12 + Time matrix 来源表 |
@@ -163,8 +198,9 @@ Requirement ID
 | 8 | 每个失败组合有确定性优先级 | PASS | Spec 11 rank 1–22 + subject×reason×stage映射 |
 | 9 | 每个 APPROX 结果有水印与方向 | PASS | Spec 5.8/9，2B-RULE-002/008/009 |
 | 10 | 无2C/GUI/LLM/HTTP/交易越界 | PASS | Spec 1/14 + docs-only diff gate |
-| 11 | 红队无未关闭 BLOCKER | PASS | 累计20/20 closed，本轮14/14，0 open |
+| 11 | 红队无未关闭 BLOCKER | PASS | 累计25/25 closed，本轮5/5，0 open |
 | 12 | 未决问题集中且不留编码决定 | PASS | Spec 16，未决=0 |
+| 13 | Master Test Registry完整且分类正确 | PASS | 114 Unit+109 Property+212 Supplemental=435；71个GF Fixture ID排除 |
 
 ## 8. 版本与公式关联
 
@@ -181,12 +217,18 @@ Requirement ID
 | FUNDING_RISK_CONFIG_V1 | FUND-F14 |
 | POSITION_SIZING_MODEL_V2 | RISK-F13–19、QTY-F16、CASH-F19/F20 |
 | ACCOUNT_PLANNING_SNAPSHOT_SCHEMA_V1 | CASH-F01 |
+| ACCOUNT_PLANNING_EVIDENCE_BUNDLE_SCHEMA_V1 | wallet/valuation/position/open-risk/pending逐项证据 |
+| ACCOUNT_EQUITY_MODEL_V1 | `current_equity=wallet_balance+unrealized_pnl` |
+| MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1 | eligible时刻mark-price open估值 |
+| PORTFOLIO_BATCH_COMPLETENESS_SNAPSHOT_SCHEMA_V1 | expected intents与resolution双射 |
+| PORTFOLIO_BATCH_COMPLETENESS_POLICY_V1 | completion event与排序/终态规则 |
 | PORTFOLIO_SCALING_MODEL_V2 | RISK-F20/F21/F22、CASH-F22/F23、SCALE-F23/F24 |
 | CONTRACT_MINIMUM_V1 | MIN-F25 |
 | LEVERAGE_POLICY_V1_FIXED_1X | LEV-F26 |
 | 2B_REJECTION_PRIORITY_V2 | Spec 11 rank matrix |
 | 2B_REJECTION_SUBJECT_DISPOSITION_V1 | Spec 11联合映射 |
 | 2B_CANONICAL_VERSION_V1 | 所有正式对象 ID/bytes |
+| MASTER_TEST_REGISTRY_V1 | 五文档Test ID并集与pytest metadata双向集合 |
 
 ## 9. 范围审计规则
 
@@ -206,16 +248,8 @@ git diff --check
 
 另行执行中英文占位符与模糊措辞扫描；当前规范公式中不使用近似语言。
 
-## 10. 人工审核入口
+## 10. 实施转场
 
-人工一次性审核应集中确认：
+本轮文档审计必须先证明：Snapshot hash不含watermark、Completeness为正式ID/hash对象、expected intents与resolution双射、Scaling绑定Batch、AcceptedItem无opaque hash、AEB可重放全部账户聚合、Master Registry覆盖五文档Test ID、design branch仅修改7份docs。
 
-1. Schema 字段是否过多或遗漏，但不得合并 Entry/Exit；
-2. 39 个 Formula ID 的数值与舍入；
-3. funding window 保守 7 次语义；
-4. AS 的 available/pending/open-risk 分解；
-5. APPROX Gate；
-6. rejection priority；
-7. 100 条需求与未来实现拆分。
-
-若人工要求修改，必须一次性更新 spec、acceptance、illegal、time、golden、red-team 和本审计文件，然后再次进行同样完整性检查。人工书面批准前不得生成实现计划或业务/测试代码。
+审计通过后提交design commit，合并并推送`fork/main`，再从更新后的fork main创建`feature/second-batch-2b-execution-planning`。先提交完整实施计划，随后按10个Task逐项RED→GREEN→REFACTOR→commit；不再等待纯文档批准，不得开始2C。
