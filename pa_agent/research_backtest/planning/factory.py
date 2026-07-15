@@ -78,7 +78,7 @@ class EntryPlanningInputs:
     target_open: TargetMinuteOpenSnapshot | None
     watermark: TargetEventWatermark
     contract: ContractRuleCoverage
-    cost: CostModelSnapshot
+    cost: CostModelSnapshot | None
     funding_schedule: FundingScheduleSnapshot
     funding_risk: FundingRiskConfigSnapshot
     account: AccountPlanningSnapshot | None
@@ -239,6 +239,8 @@ def build_entry_execution_plan(
         return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    if inputs.cost is None:
+        return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
     try:
         ensure_contract_usable(inputs.contract, inputs.stage)
     except ContractRuleUnavailableError:

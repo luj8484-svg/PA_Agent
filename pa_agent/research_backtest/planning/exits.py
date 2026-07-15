@@ -103,7 +103,7 @@ class ExitPlanningInputs:
     target_open: TargetMinuteOpenSnapshot | None
     watermark: TargetEventWatermark
     contract: ContractRuleCoverage
-    cost: CostModelSnapshot
+    cost: CostModelSnapshot | None
     target_position_snapshot_hash: str
     code_commit: str
     dependency_lock_hash: str
@@ -142,6 +142,8 @@ def build_exit_execution_plan(
         return _reject(inputs, ExecutionRejectionReason.POSITION_SNAPSHOT_CHANGED)
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    if inputs.cost is None:
+        return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
     try:
         ensure_contract_usable(inputs.contract, inputs.stage)
     except ContractRuleUnavailableError:

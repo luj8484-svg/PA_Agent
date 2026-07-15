@@ -46,7 +46,7 @@ class SizingInputs:
     reference_price: Decimal
     atr: Decimal
     contract: ContractRuleCoverage
-    cost: CostModelSnapshot
+    cost: CostModelSnapshot | None
     funding_risk: FundingRiskConfigSnapshot
     funding_event_upper_bound: int
     account: AccountPlanningSnapshot
@@ -57,16 +57,18 @@ class SizingInputs:
 
 
 def _reject(inputs: SizingInputs, reason: str | ExecutionRejectionReason) -> ExecutionRejection:
+    version_hashes = [
+        ("account", inputs.account.snapshot_hash),
+        ("contract", inputs.contract.coverage_content_hash),
+    ]
+    if inputs.cost is not None:
+        version_hashes.append(("cost", inputs.cost.snapshot_content_hash))
     return choose_rejection(
         subject=inputs.subject,
         event_time_utc_ms=inputs.account.event_time_utc_ms,
         facts=(rejection_fact(reason),),
         stage=inputs.stage,
-        relevant_version_hashes=(
-            ("account", inputs.account.snapshot_hash),
-            ("contract", inputs.contract.coverage_content_hash),
-            ("cost", inputs.cost.snapshot_content_hash),
-        ),
+        relevant_version_hashes=tuple(sorted(version_hashes)),
         code_commit=inputs.code_commit,
         dependency_lock_hash=inputs.dependency_lock_hash,
     )
@@ -79,6 +81,8 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
         raise ValueError("invalid sizing research stage")
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    if inputs.cost is None:
+        return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
     if inputs.symbol != inputs.contract.symbol or inputs.symbol != inputs.cost.symbol:
         raise ValueError("sizing symbol does not match contract/cost evidence")
     if inputs.symbol != inputs.funding_risk.symbol:

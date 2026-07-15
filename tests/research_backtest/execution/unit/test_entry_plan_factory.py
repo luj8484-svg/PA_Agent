@@ -29,6 +29,10 @@ def test_final_entry_plan_is_built_only_after_scaling() -> None:
     assert plan.quantity == inputs.accepted_item.final_quantity
     assert plan.portfolio_scaling_result_id == inputs.scaling.result_id
     assert plan.accepted_scaling_item_id == inputs.accepted_item.item_id
+    assert (
+        build_entry_execution_plan(replace(inputs, cost=None)).reason
+        is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
+    )
 
 
 @registered("UT-SCHEMA-002", "2B-SCHEMA-002")

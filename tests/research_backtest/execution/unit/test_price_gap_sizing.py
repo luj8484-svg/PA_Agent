@@ -156,6 +156,10 @@ def test_sizing_success_is_distinct_from_rejection() -> None:
     assert position_sizing(inputs()).result_id.startswith("size_")
     result = position_sizing(inputs(rule=contract(min_qty=Decimal("999"))))
     assert result.reason is ExecutionRejectionReason.BELOW_MIN_QTY
+    assert (
+        position_sizing(replace(inputs(), cost=None)).reason
+        is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
+    )
 
 
 @registered("UT-SCHEMA-012", "2B-SCHEMA-012")

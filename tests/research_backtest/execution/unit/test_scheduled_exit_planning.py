@@ -8,7 +8,12 @@ import pytest
 from pa_agent.research_backtest.domain.config import execution_time_config
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
-from pa_agent.research_backtest.domain.enums import ResearchStage, ScheduledExitReason, Side
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    ResearchStage,
+    ScheduledExitReason,
+    Side,
+)
 from pa_agent.research_backtest.domain.intents import exit_condition_snapshot
 from pa_agent.research_backtest.domain.market_inputs import (
     target_event_watermark,
@@ -140,11 +145,16 @@ def test_exit_intent_contains_no_future_price_or_contract_fields() -> None:
 
 @registered("UT-LIFE-005", "2B-LIFE-005")
 def test_exit_plan_waits_for_target_and_allows_halt_exit() -> None:
-    plan = build_exit_execution_plan(planning_inputs(ScheduledExitReason.HALT_EXIT))
+    inputs = planning_inputs(ScheduledExitReason.HALT_EXIT)
+    plan = build_exit_execution_plan(inputs)
     assert isinstance(plan, ExitExecutionPlan)
     assert plan.scheduled_exit_reason is ScheduledExitReason.HALT_EXIT
     assert plan.quantity == Decimal("1.234")
     assert plan.plan_created_time_utc_ms == TARGET
+    assert (
+        build_exit_execution_plan(replace(inputs, cost=None)).reason
+        is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
+    )
 
 
 @registered("UT-SCHEMA-004", "2B-SCHEMA-004")
