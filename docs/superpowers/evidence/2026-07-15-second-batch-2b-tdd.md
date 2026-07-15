@@ -41,3 +41,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.sizing`, after the independent Decimal reference existed and before production price/sizing formulas.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_price_gap_sizing.py -q`
 - GREEN result: `20 passed`; LONG/SHORT gap boundaries, single-slippage directional ticks, strict geometry, fee/funding envelope risk, exact 0.5% budget, raw quantity, step floor, invariant checks, and distinct zero/minimum rejections matched the independent Decimal reference.
+
+## Task 7 — Batch completeness, planning batch, and portfolio scaling
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_batch_scaling.py -q`
+- RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.batches`, after the independent portfolio-scale reference existed and before completeness/scaling production code.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_batch_scaling.py -q`
+- GREEN result: `9 passed`; formal completeness and planning-batch identities, one-resolution-per-Intent closure, canonical BTC/ETH ordering, min(1, risk, cash) scaling, step-floor rejection without redistribution, and exact batch binding passed against the independent Decimal reference.
