@@ -66,6 +66,7 @@ from pa_agent.research_backtest.planning.funding import (
     effective_adverse_rate_cap,
     funding_reserve,
 )
+from pa_agent.research_backtest.planning.prices import adverse_gap
 from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.versions import ENTRY_EXECUTION_PLAN_SCHEMA_VERSION
 
@@ -192,6 +193,12 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
         or inputs.sizing.account_snapshot_hash != inputs.account.snapshot_hash
     ):
         raise ValueError("position-sizing evidence chain is invalid")
+    adverse_gap(
+        intent.side,
+        candidate.decision_close,
+        inputs.target_open.open_price,
+        candidate.atr14_4h,
+    )
     if (
         inputs.scaling.portfolio_planning_batch_id != inputs.batch.batch_id
         or inputs.scaling.portfolio_planning_batch_content_hash != inputs.batch.batch_content_hash

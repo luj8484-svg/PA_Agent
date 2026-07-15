@@ -121,6 +121,7 @@ def inputs(
     *,
     side=Side.LONG,
     open_price=Decimal("100"),
+    decision_close=Decimal("100"),
     atr=Decimal("10"),
     rule=None,
     equity=Decimal("10000"),
@@ -130,6 +131,7 @@ def inputs(
         intent_id=intent_id,
         symbol="BTCUSDT",
         side=side,
+        decision_close=decision_close,
         reference_price=open_price,
         atr=atr,
         contract=rule or contract(),
@@ -174,6 +176,8 @@ def test_long_adverse_gap_direction_and_threshold() -> None:
     assert adverse_gap(Side.LONG, Decimal("100"), Decimal("105"), Decimal("10")) == Decimal("5")
     with pytest.raises(SizingRejected, match="GAP_TOO_LARGE"):
         adverse_gap(Side.LONG, Decimal("100"), Decimal("105.1"), Decimal("10"))
+    rejection = position_sizing(inputs(decision_close=Decimal("100"), open_price=Decimal("105.1")))
+    assert rejection.reason is ExecutionRejectionReason.GAP_TOO_LARGE
 
 
 @registered("UT-GAP-002", "2B-GAP-002")

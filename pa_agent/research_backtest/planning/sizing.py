@@ -29,7 +29,7 @@ from pa_agent.research_backtest.domain.sizing import (
     position_sizing_result,
 )
 from pa_agent.research_backtest.planning.funding import effective_adverse_rate_cap
-from pa_agent.research_backtest.planning.prices import floor_to_step, price_geometry
+from pa_agent.research_backtest.planning.prices import adverse_gap, floor_to_step, price_geometry
 from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.versions import (
     POSITION_SIZING_MODEL_VERSION,
@@ -42,6 +42,7 @@ class SizingInputs:
     intent_id: str
     symbol: str
     side: Side
+    decision_close: Decimal
     reference_price: Decimal
     atr: Decimal
     contract: ContractRuleCoverage
@@ -85,6 +86,7 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
     if type(inputs.funding_event_upper_bound) is not int or inputs.funding_event_upper_bound < 0:
         raise ValueError("funding event upper bound must be nonnegative integer")
     try:
+        adverse_gap(inputs.side, inputs.decision_close, inputs.reference_price, inputs.atr)
         geometry = price_geometry(
             inputs.side,
             inputs.reference_price,

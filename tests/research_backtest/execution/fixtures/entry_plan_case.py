@@ -176,6 +176,7 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
             intent_id=intent.intent_id,
             symbol=intent.symbol,
             side=intent.side,
+            decision_close=candidate.decision_close,
             reference_price=target_open.open_price,
             atr=candidate.atr14_4h,
             contract=contract,
