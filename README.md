@@ -1,5 +1,7 @@
 # PA Agent — AI K线分析辅助工具（桌面端）
 
+> Deterministic BTC/ETH research uses the side-effect-free `pa-research` entry point. It does not require the desktop GUI or an LLM/exchange API key. See [`docs/research_cli.md`](docs/research_cli.md) for commands and pytest pre-collection isolation.
+
 **交流 QQ 群：1016222782**
 
 ---
