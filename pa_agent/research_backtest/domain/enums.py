@@ -1,6 +1,11 @@
 from enum import StrEnum
 
 
+class Side(StrEnum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
 class MarketView(StrEnum):
     LONG = "LONG"
     SHORT = "SHORT"
