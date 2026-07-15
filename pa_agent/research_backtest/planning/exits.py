@@ -114,11 +114,11 @@ class ExitPlanningInputs:
             raise ValueError("invalid exit-planning research stage")
 
 
-def _reject(inputs: ExitPlanningInputs, reason: ExecutionRejectionReason) -> ExecutionRejection:
+def _reject(inputs: ExitPlanningInputs, *reasons: ExecutionRejectionReason) -> ExecutionRejection:
     return choose_rejection(
         subject=exit_intent_subject_ref(inputs.intent),
         event_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
-        facts=(rejection_fact(reason),),
+        facts=tuple(rejection_fact(reason) for reason in reasons),
         stage=inputs.stage,
         relevant_version_hashes=(
             ("contract", inputs.contract.coverage_content_hash),
@@ -134,37 +134,48 @@ def build_exit_execution_plan(
 ) -> ExitExecutionPlan | ExecutionRejection:
     intent = inputs.intent
     target = intent.target_execution_time_utc_ms
+    reasons: list[ExecutionRejectionReason] = []
     if inputs.target_open is None:
         if inputs.watermark.event_watermark_time_utc_ms < target:
             raise ValueError("target event has not reached the planning watermark")
-        return _reject(inputs, ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE)
+        reasons.append(ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE)
     if inputs.target_position_snapshot_hash != intent.position_snapshot_hash:
-        return _reject(inputs, ExecutionRejectionReason.POSITION_SNAPSHOT_CHANGED)
+        reasons.append(ExecutionRejectionReason.POSITION_SNAPSHOT_CHANGED)
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+        reasons.append(ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    else:
+        try:
+            ensure_contract_usable(inputs.contract, inputs.stage)
+        except ContractRuleUnavailableError:
+            reasons.append(ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+        except ContractRuleExpiredError:
+            reasons.append(ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
+        except ValueError:
+            reasons.append(ExecutionRejectionReason.DATA_INVALID)
     if inputs.cost is None:
-        return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
-    try:
-        ensure_contract_usable(inputs.contract, inputs.stage)
-    except ContractRuleUnavailableError:
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
-    except ContractRuleExpiredError:
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
-    except ValueError:
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+        reasons.append(ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
     if (
-        inputs.target_open.symbol != intent.symbol
-        or inputs.target_open.open_time_utc_ms != target
-        or inputs.watermark.symbol != intent.symbol
-        or inputs.watermark.target_open_time_utc_ms != target
-        or inputs.watermark.event_watermark_time_utc_ms < target
-        or inputs.contract.symbol != intent.symbol
-        or inputs.contract.query_time_utc_ms != target
-        or inputs.cost.symbol != intent.symbol
+        inputs.target_open is not None
+        and inputs.cost is not None
+        and (
+            inputs.target_open.symbol != intent.symbol
+            or inputs.target_open.open_time_utc_ms != target
+            or inputs.watermark.symbol != intent.symbol
+            or inputs.watermark.target_open_time_utc_ms != target
+            or inputs.watermark.event_watermark_time_utc_ms < target
+            or inputs.contract.symbol != intent.symbol
+            or inputs.contract.query_time_utc_ms != target
+            or inputs.cost.symbol != intent.symbol
+        )
     ):
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
-    if intent.full_exit_quantity % inputs.contract.step_size != 0:
-        return _reject(inputs, ExecutionRejectionReason.POSITION_QUANTITY_RULE_MISMATCH)
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
+    if (
+        not isinstance(inputs.contract, UnavailableContractRuleCoverage)
+        and intent.full_exit_quantity % inputs.contract.step_size != 0
+    ):
+        reasons.append(ExecutionRejectionReason.POSITION_QUANTITY_RULE_MISMATCH)
+    if reasons:
+        return _reject(inputs, *reasons)
     fill_price = expected_exit_price(
         intent.position_side, inputs.target_open.open_price, inputs.cost, inputs.contract
     )

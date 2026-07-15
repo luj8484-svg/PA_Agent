@@ -360,6 +360,13 @@ def disposition_for(
                 stage is ResearchStage.PAPER_SIMULATION,
             )
     elif kind is RejectionSubjectKind.PORTFOLIO_BATCH:
+        if reason is ExecutionRejectionReason.BATCH_INCOMPLETE:
+            if stage is ResearchStage.LIVE_ELIGIBILITY_RESEARCH:
+                return RejectionDisposition.EXPERIMENT_INVALID, False
+            return (
+                RejectionDisposition.EXECUTION_PATH_INVALID,
+                stage is ResearchStage.PAPER_SIMULATION,
+            )
         if reason in {
             ExecutionRejectionReason.TOTAL_RISK_ALREADY_AT_LIMIT,
             ExecutionRejectionReason.INSUFFICIENT_AVAILABLE_BALANCE,

@@ -6,7 +6,10 @@ from decimal import Decimal
 import pytest
 
 from pa_agent.research_backtest.domain.config import execution_time_config
-from pa_agent.research_backtest.domain.contracts import verified_contract_rule
+from pa_agent.research_backtest.domain.contracts import (
+    unavailable_contract_rule,
+    verified_contract_rule,
+)
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
 from pa_agent.research_backtest.domain.enums import (
     ExecutionRejectionReason,
@@ -155,6 +158,16 @@ def test_exit_plan_waits_for_target_and_allows_halt_exit() -> None:
         build_exit_execution_plan(replace(inputs, cost=None)).reason
         is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
     )
+    unavailable = unavailable_contract_rule(
+        symbol=inputs.intent.symbol,
+        query_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
+        unavailable_reason="ARCHIVE_NOT_FOUND",
+        searched_archive_hashes=(),
+    )
+    multi = build_exit_execution_plan(
+        replace(inputs, contract=unavailable, target_position_snapshot_hash="8" * 64)
+    )
+    assert multi.reason is ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE
 
 
 @registered("UT-SCHEMA-004", "2B-SCHEMA-004")

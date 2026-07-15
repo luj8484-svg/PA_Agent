@@ -4,6 +4,7 @@ from dataclasses import fields, replace
 
 import pytest
 
+from pa_agent.research_backtest.domain.contracts import unavailable_contract_rule
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ExperimentState
 from pa_agent.research_backtest.domain.plans import EntryExecutionPlan
 from pa_agent.research_backtest.planning.factory import build_entry_execution_plan
@@ -32,6 +33,10 @@ def test_final_entry_plan_is_built_only_after_scaling() -> None:
     assert (
         build_entry_execution_plan(replace(inputs, cost=None)).reason
         is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
+    )
+    assert (
+        build_entry_execution_plan(replace(inputs, open_risk_evidence_records=None)).reason
+        is ExecutionRejectionReason.OPEN_RISK_MODEL_UNAVAILABLE
     )
 
 
@@ -88,6 +93,16 @@ def test_equity_must_replay_from_the_supplied_account_evidence() -> None:
     forged = _corrupt_frozen(inputs.account, current_equity=inputs.account.current_equity + 1)
     result = build_entry_execution_plan(replace(inputs, account=forged))
     assert result.reason is ExecutionRejectionReason.DATA_INVALID
+    unavailable = unavailable_contract_rule(
+        symbol=inputs.intent.symbol,
+        query_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
+        unavailable_reason="ARCHIVE_NOT_FOUND",
+        searched_archive_hashes=(),
+    )
+    multi = build_entry_execution_plan(
+        replace(inputs, account=forged, contract=unavailable, target_open=None)
+    )
+    assert multi.reason is ExecutionRejectionReason.DATA_INVALID
 
 
 @registered("UT-RT-052", "2B-RISK-012")

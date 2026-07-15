@@ -3,12 +3,19 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pa_agent.research_backtest.domain.accounts import AccountPlanningSnapshot
-from pa_agent.research_backtest.domain.batches import PortfolioPlanningBatch
+from pa_agent.research_backtest.domain.batches import (
+    ExpectedIntentRef,
+    PortfolioBatchCompletenessSnapshot,
+    PortfolioPlanningBatch,
+    ResolutionRef,
+    portfolio_batch_completeness_snapshot,
+)
 from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ResearchStage
 from pa_agent.research_backtest.domain.market_inputs import TargetMinuteOpenSnapshot
 from pa_agent.research_backtest.domain.rejections import (
     ExecutionRejection,
+    PortfolioBatchSubjectRef,
     portfolio_batch_subject_ref,
     rejection_fact,
 )
@@ -30,6 +37,58 @@ from pa_agent.research_backtest.versions import (
 )
 
 
+def resolve_batch_completeness(
+    expected_intents: tuple[ExpectedIntentRef, ...],
+    resolutions: tuple[ResolutionRef, ...],
+    *,
+    subject: PortfolioBatchSubjectRef,
+    completeness_event_time_utc_ms: int,
+    source_event_id: str,
+    stage: ResearchStage,
+    code_commit: str,
+    dependency_lock_hash: str,
+) -> PortfolioBatchCompletenessSnapshot | ExecutionRejection:
+    expected_ids = tuple(sorted(item.entry_intent_id for item in expected_intents))
+    resolution_ids = tuple(sorted(item.entry_intent_id for item in resolutions))
+    missing_only = len(resolution_ids) == len(set(resolution_ids)) and set(resolution_ids) < set(
+        expected_ids
+    )
+    if resolution_ids != expected_ids:
+        reason = (
+            ExecutionRejectionReason.BATCH_INCOMPLETE
+            if missing_only
+            else ExecutionRejectionReason.DATA_INVALID
+        )
+        return choose_rejection(
+            subject=subject,
+            event_time_utc_ms=completeness_event_time_utc_ms,
+            facts=(rejection_fact(reason),),
+            stage=stage,
+            relevant_version_hashes=(("batch_subject", subject.subject_content_hash),),
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
+    try:
+        return portfolio_batch_completeness_snapshot(
+            expected_intents,
+            resolutions,
+            completeness_event_time_utc_ms=completeness_event_time_utc_ms,
+            source_event_id=source_event_id,
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
+    except ValueError:
+        return choose_rejection(
+            subject=subject,
+            event_time_utc_ms=completeness_event_time_utc_ms,
+            facts=(rejection_fact(ExecutionRejectionReason.DATA_INVALID),),
+            stage=stage,
+            relevant_version_hashes=(("batch_subject", subject.subject_content_hash),),
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
+
+
 def scale_portfolio(
     batch: PortfolioPlanningBatch,
     account: AccountPlanningSnapshot,
@@ -49,6 +108,10 @@ def scale_portfolio(
         or tuple(item.snapshot_id for item in ordered_opens) != batch.target_open_snapshot_ids
         or tuple(item.symbol for item in ordered_opens) != tuple(item.symbol for item in ordered)
         or any(item.open_time_utc_ms != batch.eligible_time_utc_ms for item in ordered_opens)
+        or any(
+            snapshot.open_price != sizing.reference_price
+            for snapshot, sizing in zip(ordered_opens, ordered, strict=True)
+        )
     ):
         raise ValueError("target-open evidence does not match batch rows")
     target_open_snapshot_hashes = tuple(item.snapshot_content_hash for item in ordered_opens)

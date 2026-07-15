@@ -21,8 +21,12 @@ from pa_agent.research_backtest.domain.batches import (
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.enums import ResearchStage, ResolutionKind, Side
 from pa_agent.research_backtest.domain.market_inputs import target_minute_open_snapshot
+from pa_agent.research_backtest.domain.rejections import portfolio_batch_subject_ref
 from pa_agent.research_backtest.domain.sizing import position_sizing_result
-from pa_agent.research_backtest.planning.portfolio import scale_portfolio
+from pa_agent.research_backtest.planning.portfolio import (
+    resolve_batch_completeness,
+    scale_portfolio,
+)
 from tests.research_backtest.execution.fixtures.reference_portfolio import reference_scale
 
 SHA = "a" * 64
@@ -194,6 +198,26 @@ def test_each_expected_intent_requires_exactly_one_resolution() -> None:
             code_commit=COMMIT,
             dependency_lock_hash=LOCK,
         )
+    batch, acct, _, _, opens, stage = complete()
+    subject = portfolio_batch_subject_ref(
+        portfolio_planning_batch_id=batch.batch_id,
+        symbols=batch.ordered_symbols,
+        ordered_entry_intent_ids=batch.ordered_entry_intent_ids,
+        batch_content_hash=batch.batch_content_hash,
+        account_snapshot_hash=acct.snapshot_hash,
+        target_open_snapshot_hashes=tuple(item.snapshot_content_hash for item in opens),
+    )
+    rejection = resolve_batch_completeness(
+        expected,
+        (),
+        subject=subject,
+        completeness_event_time_utc_ms=TIME,
+        source_event_id="incomplete-event",
+        stage=stage,
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
+    )
+    assert rejection.reason.value == "BATCH_INCOMPLETE"
 
 
 @registered("UT-TIME-014", "2B-TIME-014")

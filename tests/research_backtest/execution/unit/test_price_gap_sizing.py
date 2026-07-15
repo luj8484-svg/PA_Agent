@@ -12,14 +12,19 @@ from pa_agent.research_backtest.domain.accounts import (
     make_account_planning_snapshot,
     wallet_ledger_evidence,
 )
+from pa_agent.research_backtest.domain.candidates import strategy_candidate
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
 from pa_agent.research_backtest.domain.enums import (
     ExecutionRejectionReason,
+    MarketReason,
+    MarketView,
     ResearchStage,
     Side,
+    TrendState,
 )
 from pa_agent.research_backtest.domain.funding import covered_funding_risk_config
+from pa_agent.research_backtest.domain.market_inputs import target_minute_open_snapshot
 from pa_agent.research_backtest.domain.rejections import entry_intent_subject_ref_from_identity
 from pa_agent.research_backtest.domain.sizing import SizingRejected
 from pa_agent.research_backtest.planning.prices import (
@@ -47,7 +52,12 @@ def registered(test_id: str, requirement_id: str):
     return decorate
 
 
-def contract(*, min_qty=Decimal("0.001"), min_notional=Decimal("5")):
+def contract(
+    *,
+    min_qty=Decimal("0.001"),
+    min_notional=Decimal("5"),
+    effective_to=TARGET + 1,
+):
     return verified_contract_rule(
         symbol="BTCUSDT",
         query_time_utc_ms=TARGET,
@@ -55,7 +65,7 @@ def contract(*, min_qty=Decimal("0.001"), min_notional=Decimal("5")):
         source_uri_or_archive_id="rules",
         source_content_hash=SHA,
         effective_from_utc_ms=0,
-        effective_to_utc_ms=TARGET + 1,
+        effective_to_utc_ms=effective_to,
         rule_version="RULE_V1",
         tick_size=Decimal("0.1"),
         step_size=Decimal("0.001"),
@@ -114,7 +124,11 @@ def account(*, equity=Decimal("10000")):
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
     )
-    return make_account_planning_snapshot(bundle, evidence, eligible_time_utc_ms=TARGET)
+    return (
+        make_account_planning_snapshot(bundle, evidence, eligible_time_utc_ms=TARGET),
+        bundle,
+        evidence,
+    )
 
 
 def inputs(
@@ -127,21 +141,59 @@ def inputs(
     equity=Decimal("10000"),
 ):
     intent_id = "eint_" + "1" * 24
+    acct, bundle, evidence = account(equity=equity)
+    market_view = MarketView.LONG if side is Side.LONG else MarketView.SHORT
+    source_candidate = strategy_candidate(
+        symbol="BTCUSDT",
+        decision_time_utc_ms=14_400_000 - 1,
+        decision_bar_open_time_utc_ms=0,
+        market_view=market_view,
+        market_reason=(
+            MarketReason.BULL_DONCHIAN_BREAKOUT
+            if side is Side.LONG
+            else MarketReason.BEAR_DONCHIAN_BREAKOUT
+        ),
+        decision_close=decision_close,
+        daily_close=Decimal("110") if side is Side.LONG else Decimal("90"),
+        trend_state=TrendState.BULL if side is Side.LONG else TrendState.BEAR,
+        ema50_daily=Decimal("105") if side is Side.LONG else Decimal("95"),
+        ema200_daily=Decimal("100"),
+        atr14_4h=atr,
+        donchian_high_previous_20=(
+            decision_close - 1 if side is Side.LONG else decision_close + 20
+        ),
+        donchian_low_previous_20=(decision_close - 20 if side is Side.LONG else decision_close + 1),
+        decision_visible_input_hash=SHA,
+        indicator_config_hash="d" * 64,
+        strategy_config_hash="e" * 64,
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
+    )
+    target_open = target_minute_open_snapshot(
+        symbol="BTCUSDT",
+        open_time_utc_ms=TARGET,
+        open_price=open_price,
+        source_stream_version="BINANCE_TRADE_OPEN_EVENT_V1",
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
+    )
     return SizingInputs(
         intent_id=intent_id,
         symbol="BTCUSDT",
         side=side,
-        decision_close=decision_close,
-        reference_price=open_price,
-        atr=atr,
+        candidate=source_candidate,
+        target_open=target_open,
         contract=rule or contract(),
         cost=cost(),
         funding_risk=funding(),
         funding_event_upper_bound=3,
-        account=account(equity=equity),
+        account=acct,
+        account_evidence_bundle=bundle,
+        account_evidence_records=evidence,
+        open_risk_evidence_records=evidence.open_risks,
         subject=entry_intent_subject_ref_from_identity(
             entry_intent_id=intent_id,
-            candidate_id="cand_" + "1" * 24,
+            candidate_id=source_candidate.candidate_id,
             symbol="BTCUSDT",
             intent_content_hash="9" * 64,
         ),
@@ -159,6 +211,14 @@ def test_sizing_success_is_distinct_from_rejection() -> None:
     assert (
         position_sizing(replace(inputs(), cost=None)).reason
         is ExecutionRejectionReason.COST_MODEL_UNAVAILABLE
+    )
+    assert (
+        position_sizing(replace(inputs(), open_risk_evidence_records=None)).reason
+        is ExecutionRejectionReason.OPEN_RISK_MODEL_UNAVAILABLE
+    )
+    assert (
+        position_sizing(inputs(rule=contract(effective_to=TARGET))).reason
+        is ExecutionRejectionReason.CONTRACT_RULE_EXPIRED
     )
 
 

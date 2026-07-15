@@ -3,10 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from pa_agent.research_backtest.domain.accounts import AccountPlanningSnapshot
+from pa_agent.research_backtest.domain.accounts import (
+    AccountEvidenceRecords,
+    AccountPlanningEvidenceBundle,
+    AccountPlanningSnapshot,
+    OpenRiskEvidence,
+    RequiredAccountEvidenceUnavailableError,
+    make_account_planning_snapshot,
+)
+from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.contracts import (
     ContractRuleCoverage,
+    ContractRuleExpiredError,
+    ContractRuleUnavailableError,
     UnavailableContractRuleCoverage,
+    ensure_contract_usable,
 )
 from pa_agent.research_backtest.domain.costs import CostModelSnapshot
 from pa_agent.research_backtest.domain.enums import (
@@ -18,6 +29,7 @@ from pa_agent.research_backtest.domain.funding import (
     FundingRiskConfigSnapshot,
     FundingRiskConfigUnavailableError,
 )
+from pa_agent.research_backtest.domain.market_inputs import TargetMinuteOpenSnapshot
 from pa_agent.research_backtest.domain.rejections import (
     EntryIntentSubjectRef,
     ExecutionRejection,
@@ -42,14 +54,16 @@ class SizingInputs:
     intent_id: str
     symbol: str
     side: Side
-    decision_close: Decimal
-    reference_price: Decimal
-    atr: Decimal
+    candidate: StrategyCandidate
+    target_open: TargetMinuteOpenSnapshot
     contract: ContractRuleCoverage
     cost: CostModelSnapshot | None
     funding_risk: FundingRiskConfigSnapshot
     funding_event_upper_bound: int
     account: AccountPlanningSnapshot
+    account_evidence_bundle: AccountPlanningEvidenceBundle | None
+    account_evidence_records: AccountEvidenceRecords | None
+    open_risk_evidence_records: tuple[OpenRiskEvidence, ...] | None
     subject: EntryIntentSubjectRef
     stage: ResearchStage
     code_commit: str
@@ -81,8 +95,41 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
         raise ValueError("invalid sizing research stage")
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    try:
+        ensure_contract_usable(inputs.contract, inputs.stage)
+    except ContractRuleUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    except ContractRuleExpiredError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if inputs.cost is None:
         return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
+    if inputs.account_evidence_bundle is None or inputs.account_evidence_records is None:
+        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    if inputs.open_risk_evidence_records is None:
+        return _reject(inputs, ExecutionRejectionReason.OPEN_RISK_MODEL_UNAVAILABLE)
+    if inputs.open_risk_evidence_records != inputs.account_evidence_records.open_risks:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    try:
+        replayed = make_account_planning_snapshot(
+            inputs.account_evidence_bundle,
+            inputs.account_evidence_records,
+            eligible_time_utc_ms=inputs.account.event_time_utc_ms,
+        )
+    except RequiredAccountEvidenceUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    if replayed != inputs.account:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    if (
+        inputs.candidate.candidate_id != inputs.subject.candidate_id
+        or inputs.candidate.symbol != inputs.symbol
+        or inputs.candidate.market_view.value != inputs.side.value
+        or inputs.target_open.symbol != inputs.symbol
+    ):
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if inputs.symbol != inputs.contract.symbol or inputs.symbol != inputs.cost.symbol:
         raise ValueError("sizing symbol does not match contract/cost evidence")
     if inputs.symbol != inputs.funding_risk.symbol:
@@ -90,11 +137,16 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
     if type(inputs.funding_event_upper_bound) is not int or inputs.funding_event_upper_bound < 0:
         raise ValueError("funding event upper bound must be nonnegative integer")
     try:
-        adverse_gap(inputs.side, inputs.decision_close, inputs.reference_price, inputs.atr)
+        adverse_gap(
+            inputs.side,
+            inputs.candidate.decision_close,
+            inputs.target_open.open_price,
+            inputs.candidate.atr14_4h,
+        )
         geometry = price_geometry(
             inputs.side,
-            inputs.reference_price,
-            inputs.atr,
+            inputs.target_open.open_price,
+            inputs.candidate.atr14_4h,
             inputs.cost,
             inputs.contract,
         )
@@ -141,7 +193,7 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
         "intent_id": inputs.intent_id,
         "symbol": inputs.symbol,
         "side": inputs.side,
-        "reference_price": inputs.reference_price,
+        "reference_price": inputs.target_open.open_price,
         "expected_entry_fill_price": entry,
         "stop_trigger_price": geometry.stop_trigger_price,
         "take_profit_trigger_price": geometry.take_profit_trigger_price,
