@@ -34,3 +34,10 @@
 - RED result: collection failed because `ExecutionRejectionReason` and the rejection modules did not exist, proving the frozen priority/matrix path was absent.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_rejection_matrix.py -q`
 - GREEN result: `6 passed`; closed subject variants, multi-symbol batch identity, validator-order-invariant reason selection, illegal-combination coercion, and subject×reason×stage disposition/retry mapping passed.
+
+## Task 6 — Price, gap, reserve, and position sizing
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_price_gap_sizing.py -q`
+- RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.sizing`, after the independent Decimal reference existed and before production price/sizing formulas.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_price_gap_sizing.py -q`
+- GREEN result: `20 passed`; LONG/SHORT gap boundaries, single-slippage directional ticks, strict geometry, fee/funding envelope risk, exact 0.5% budget, raw quantity, step floor, invariant checks, and distinct zero/minimum rejections matched the independent Decimal reference.
