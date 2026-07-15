@@ -98,6 +98,22 @@ class ResolutionKind(StrEnum):
     EXPERIMENT_INVALID = "EXPERIMENT_INVALID"
 
 
+class OrderType(StrEnum):
+    MARKET_AT_1M_OPEN = "MARKET_AT_1M_OPEN"
+
+
+class TriggerBasis(StrEnum):
+    TRADE_1M_OPEN = "TRADE_1M_OPEN"
+
+
+class MarginMode(StrEnum):
+    ISOLATED = "ISOLATED"
+
+
+class PositionMode(StrEnum):
+    ONE_WAY = "ONE_WAY"
+
+
 class MarketView(StrEnum):
     LONG = "LONG"
     SHORT = "SHORT"

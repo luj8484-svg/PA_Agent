@@ -48,3 +48,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.batches`, after the independent portfolio-scale reference existed and before completeness/scaling production code.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_batch_scaling.py -q`
 - GREEN result: `9 passed`; formal completeness and planning-batch identities, one-resolution-per-Intent closure, canonical BTC/ETH ordering, min(1, risk, cash) scaling, step-floor rejection without redistribution, and exact batch binding passed against the independent Decimal reference.
+
+## Task 8 — Final EntryExecutionPlan evidence-chain factory
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_entry_plan_factory.py -q`
+- RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.plans`, after the complete independent input-chain fixture existed and before the final plan domain/factory implementation.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_entry_plan_factory.py -q`
+- GREEN result: `5 passed`; final-plan-only construction, closed Entry schema, exact target/48h/cash formulas, deterministic formal identity, accepted-item quantity provenance, and the HALTED entry rejection passed over a complete replayable evidence chain.
