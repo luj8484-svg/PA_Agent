@@ -5,7 +5,6 @@ PACKAGE = Path("pa_agent/research_backtest")
 SECOND_BATCH_2A_PATHS = (
     PACKAGE / "domain" / "candidates.py",
     PACKAGE / "domain" / "canonical.py",
-    PACKAGE / "domain" / "enums.py",
     PACKAGE / "domain" / "failures.py",
     PACKAGE / "domain" / "validation.py",
     PACKAGE / "indicators",

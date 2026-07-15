@@ -107,12 +107,15 @@ def test_registry_validator_fails_empty_missing_or_orphan_implementations(tmp_pa
         validate_registry(documented, (ImplementedTest("UT-OTHER-001", ("2B-ID-008",)),))
 
 
-@registered("UT-ID-005", "2B-ID-005")
+@registered("PT-MASTER-REGISTRY-BIJECTION", "2B-SCOPE-006")
 def test_registry_validator_rejects_duplicate_test_identity(tmp_path: Path) -> None:
     documented = load_documented_master_registry(
-        _write_sources(tmp_path, ("| 2B-ID-005 | x | UT-ID-005 |", "", "", "", ""))
+        _write_sources(
+            tmp_path,
+            ("| 2B-SCOPE-006 | x | PT-MASTER-REGISTRY-BIJECTION |", "", "", "", ""),
+        )
     )
-    implemented = ImplementedTest("UT-ID-005", ("2B-ID-005",))
+    implemented = ImplementedTest("PT-MASTER-REGISTRY-BIJECTION", ("2B-SCOPE-006",))
     with pytest.raises(RegistryValidationError, match="duplicate"):
         validate_registry(documented, (implemented, implemented))
 

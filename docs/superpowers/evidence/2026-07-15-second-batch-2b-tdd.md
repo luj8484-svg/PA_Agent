@@ -27,3 +27,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.accounts`, after the independent account arithmetic reference existed and before any account evidence implementation.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_account_evidence.py -q`
 - GREEN result: `8 passed`; bundle closure, exact eligible-time valuation, wallet/equity/available-balance replay, open-risk and pending collection replay, missing evidence failure, and immutable snapshot construction passed against the independent Decimal reference.
+
+## Task 5 — Rejection subjects, matrix, and priority
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_rejection_matrix.py -q`
+- RED result: collection failed because `ExecutionRejectionReason` and the rejection modules did not exist, proving the frozen priority/matrix path was absent.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_rejection_matrix.py -q`
+- GREEN result: `6 passed`; closed subject variants, multi-symbol batch identity, validator-order-invariant reason selection, illegal-combination coercion, and subject×reason×stage disposition/retry mapping passed.
