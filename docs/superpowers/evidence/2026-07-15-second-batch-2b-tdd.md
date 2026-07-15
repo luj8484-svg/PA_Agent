@@ -20,3 +20,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.contracts`, after the independent funding-window reference was present and before production formulas existed.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_contract_cost_funding.py -q`
 - GREEN result: `27 passed`; contract tagged unions/gates, cost snapshots, explicit funding windows, `(entry,maxExit]`, coverage fail-closed behavior, independent funding-risk evidence, and the seven-window 48h reference comparison passed.
+
+## Task 4 — Account snapshot and evidence bundle
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_account_evidence.py -q`
+- RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.accounts`, after the independent account arithmetic reference existed and before any account evidence implementation.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_account_evidence.py -q`
+- GREEN result: `8 passed`; bundle closure, exact eligible-time valuation, wallet/equity/available-balance replay, open-risk and pending collection replay, missing evidence failure, and immutable snapshot construction passed against the independent Decimal reference.

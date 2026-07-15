@@ -35,6 +35,21 @@ class ContractRuleReviewStatus(StrEnum):
     APPROVED_HINDSIGHT_DIAGNOSTIC = "APPROVED_HINDSIGHT_DIAGNOSTIC"
 
 
+class PlanningPhase(StrEnum):
+    POST_SAME_TIME_FUNDING_AND_SCHEDULED_EXITS_PRE_ENTRY_BATCH_V1 = (
+        "POST_SAME_TIME_FUNDING_AND_SCHEDULED_EXITS_PRE_ENTRY_BATCH_V1"
+    )
+
+
+class ValuationBasis(StrEnum):
+    MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1 = "MARK_PRICE_OPEN_AT_ELIGIBLE_TIME_V1"
+
+
+class ExperimentState(StrEnum):
+    RUNNING = "RUNNING"
+    HALTED = "HALTED"
+
+
 class MarketView(StrEnum):
     LONG = "LONG"
     SHORT = "SHORT"
