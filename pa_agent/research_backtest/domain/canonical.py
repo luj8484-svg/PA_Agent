@@ -28,7 +28,9 @@ def canonical_value(value: Any) -> Any:
     if isinstance(value, Decimal):
         return canonical_decimal(value)
     if isinstance(value, Mapping):
-        return {str(key): canonical_value(value[key]) for key in sorted(value)}
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Canonical mapping keys must be strings")
+        return {key: canonical_value(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [canonical_value(item) for item in value]
     if value is None or isinstance(value, (str, int, bool)):
