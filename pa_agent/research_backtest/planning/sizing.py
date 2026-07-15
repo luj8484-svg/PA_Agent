@@ -26,6 +26,7 @@ from pa_agent.research_backtest.domain.enums import (
     Side,
 )
 from pa_agent.research_backtest.domain.funding import (
+    CoveredFundingRiskConfigSnapshot,
     FundingRiskConfigSnapshot,
     FundingRiskConfigUnavailableError,
 )
@@ -158,6 +159,13 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
     ):
         reasons.append(ExecutionRejectionReason.DATA_INVALID)
     if inputs.symbol != inputs.funding_risk.symbol:
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
+    if isinstance(inputs.funding_risk, CoveredFundingRiskConfigSnapshot) and (
+        not inputs.funding_risk.effective_from_utc_ms
+        <= inputs.target_execution_time_utc_ms
+        < inputs.funding_risk.effective_to_utc_ms
+        or inputs.funding_risk.evidence_time_utc_ms > inputs.target_execution_time_utc_ms
+    ):
         reasons.append(ExecutionRejectionReason.DATA_INVALID)
     if type(inputs.funding_event_upper_bound) is not int or inputs.funding_event_upper_bound < 0:
         reasons.append(ExecutionRejectionReason.DATA_INVALID)

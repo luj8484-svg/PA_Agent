@@ -265,6 +265,25 @@ def test_sizing_success_is_distinct_from_rejection() -> None:
         position_sizing(replace(value, subject=wrong_subject)).reason
         is ExecutionRejectionReason.DATA_INVALID
     )
+    future_funding = covered_funding_risk_config(
+        symbol="BTCUSDT",
+        target_time_utc_ms=TARGET + 100_000,
+        adverse_rate_cap=Decimal("0.0001"),
+        effective_from_utc_ms=TARGET + 50_000,
+        effective_to_utc_ms=TARGET + 200_000,
+        source_kind="FUTURE_EVIDENCE",
+        source_manifest_hash=SHA,
+        verification_mode="VERIFIED",
+        stress_multiplier=Decimal("1"),
+        watermark="VERIFIED",
+        evidence_time_utc_ms=TARGET + 100_000,
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
+    )
+    assert (
+        position_sizing(replace(value, funding_risk=future_funding)).reason
+        is ExecutionRejectionReason.DATA_INVALID
+    )
 
 
 @registered("UT-SCHEMA-012", "2B-SCHEMA-012")

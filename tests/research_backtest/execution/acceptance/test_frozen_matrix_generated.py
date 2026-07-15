@@ -38,7 +38,7 @@ SCENARIO_PATH = (
 LOCKED_MASTER_REGISTRY_HASH = "e56d6e6de968671b6e546d593f0f7624a4233b3772bf49f8bae38879d9ee2ca9"
 LOCKED_EXPLICIT_TEST_SET_HASH = "d9955f044a13f365598a39586220f14208d3842ea950de6beb07b7a10eaad3bc"
 EXPLICIT_ID_PATTERN = re.compile(r'(?:registered|test_id)\("([A-Z0-9-]+)"')
-SEMANTIC_CASE_SCHEMA_VERSION = "FROZEN_SEMANTIC_CASE_V1"
+SEMANTIC_CASE_SCHEMA_VERSION = "FROZEN_SEMANTIC_CASE_V2_SOURCE_BOUND"
 LOCAL_CONTRACT_MODULE = "tests.research_backtest.execution.acceptance.test_frozen_matrix_generated"
 UNIT_CONTRACT_MODULES = (
     "tests.research_backtest.execution.unit.test_account_evidence",
@@ -160,6 +160,116 @@ def _semantic_closed_batch_scaling_schemas() -> None:
     assert "item_input_hash" not in {field.name for field in fields(type(batch))}
 
 
+def _semantic_scaling_item_union() -> None:
+    from pa_agent.research_backtest.planning.portfolio import scale_portfolio
+
+    result = scale_portfolio(*complete_batch(balance=Decimal("1000"), eth_min=Decimal("1")))
+    type_names = {type(item).__name__ for item in result.item_results}
+    assert type_names == {"AcceptedScalingItem", "RejectedScalingItem"}
+    accepted = next(
+        item for item in result.item_results if type(item).__name__ == "AcceptedScalingItem"
+    )
+    rejected = next(
+        item for item in result.item_results if type(item).__name__ == "RejectedScalingItem"
+    )
+    accepted_fields = {field.name for field in fields(type(accepted))}
+    rejected_fields = {field.name for field in fields(type(rejected))}
+    assert {"final_quantity", "final_planned_risk", "final_required_cash"} <= accepted_fields
+    assert "rejection_id" in rejected_fields
+    assert "rejection_id" not in accepted_fields
+    assert "final_quantity" not in rejected_fields
+
+
+def _semantic_rejection_subject_union() -> None:
+    from pa_agent.research_backtest.domain.base import formal_identity
+    from pa_agent.research_backtest.domain.enums import (
+        ExecutionRejectionReason,
+        RejectionSubjectKind,
+        ResearchStage,
+    )
+    from pa_agent.research_backtest.domain.rejections import (
+        DISPOSITION_ROWS,
+        CandidateSubjectRef,
+        EntryIntentSubjectRef,
+        EntryPlanSubjectRef,
+        ExitIntentSubjectRef,
+        ExitPlanSubjectRef,
+        PortfolioBatchSubjectRef,
+        candidate_subject_ref,
+        entry_intent_subject_ref,
+        exit_intent_subject_ref,
+        portfolio_batch_subject_ref,
+        subject_kind,
+    )
+    from pa_agent.research_backtest.versions import REJECTION_SUBJECT_REF_SCHEMA_VERSION
+    from tests.research_backtest.execution.unit.test_rejection_matrix import candidate, intent
+
+    candidate_ref = candidate_subject_ref(candidate())
+    entry_ref = entry_intent_subject_ref(intent())
+    exit_ref = exit_intent_subject_ref(planning_inputs().intent)
+    batch_ref = portfolio_batch_subject_ref(
+        portfolio_planning_batch_id="pbatch_" + "1" * 24,
+        symbols=("ETHUSDT", "BTCUSDT"),
+        ordered_entry_intent_ids=("eint_" + "1" * 24, "eint_" + "2" * 24),
+        batch_content_hash="1" * 64,
+        account_snapshot_hash="2" * 64,
+        target_open_snapshot_hashes=("3" * 64, "4" * 64),
+    )
+
+    def plan_ref(cls, payload):
+        subject_id, digest = formal_identity("sref_", payload)
+        return cls(subject_id=subject_id, subject_content_hash=digest, **payload)
+
+    entry_plan_ref = plan_ref(
+        EntryPlanSubjectRef,
+        {
+            "schema_version": REJECTION_SUBJECT_REF_SCHEMA_VERSION,
+            "entry_plan_id": "eplan_" + "1" * 24,
+            "entry_intent_id": entry_ref.entry_intent_id,
+            "symbols": ("BTCUSDT",),
+            "origin_ids": (entry_ref.entry_intent_id, candidate_ref.candidate_id),
+            "plan_content_hash": "5" * 64,
+        },
+    )
+    exit_plan_ref = plan_ref(
+        ExitPlanSubjectRef,
+        {
+            "schema_version": REJECTION_SUBJECT_REF_SCHEMA_VERSION,
+            "exit_plan_id": "xplan_" + "1" * 24,
+            "exit_intent_id": exit_ref.exit_intent_id,
+            "symbols": ("BTCUSDT",),
+            "origin_ids": (
+                exit_ref.exit_intent_id,
+                exit_ref.condition_event_id,
+                exit_ref.position_id,
+            ),
+            "plan_content_hash": "6" * 64,
+        },
+    )
+    refs = (
+        candidate_ref,
+        entry_ref,
+        exit_ref,
+        entry_plan_ref,
+        exit_plan_ref,
+        batch_ref,
+    )
+    assert {type(item) for item in refs} == {
+        CandidateSubjectRef,
+        EntryIntentSubjectRef,
+        ExitIntentSubjectRef,
+        EntryPlanSubjectRef,
+        ExitPlanSubjectRef,
+        PortfolioBatchSubjectRef,
+    }
+    assert {subject_kind(item) for item in refs} == set(RejectionSubjectKind)
+    assert all(len(item.symbols) == 1 for item in refs[:-1])
+    assert batch_ref.symbols == ("BTCUSDT", "ETHUSDT")
+    assert len(DISPOSITION_ROWS) == (
+        len(RejectionSubjectKind) * len(ExecutionRejectionReason) * len(ResearchStage)
+    )
+
+
 def _semantic_entry_lifecycle_links() -> None:
     inputs = complete_entry_inputs()
     plan = build_entry_execution_plan(inputs)
@@ -177,9 +287,9 @@ LOCAL_SEMANTIC_CONTRACTS = {
     "2B-PORT-007": _semantic_incomplete_pre_batch,
     "2B-RISK-005": _semantic_portfolio_identity_and_risk,
     "2B-RISK-008": _semantic_portfolio_identity_and_risk,
-    "2B-SCHEMA-008": _semantic_closed_batch_scaling_schemas,
+    "2B-SCHEMA-008": _semantic_scaling_item_union,
     "2B-SCHEMA-010": _semantic_closed_batch_scaling_schemas,
-    "2B-SCHEMA-011": _semantic_closed_batch_scaling_schemas,
+    "2B-SCHEMA-011": _semantic_rejection_subject_union,
     "2B-SCOPE-001": _semantic_scope_boundary,
     "2B-SCOPE-002": _semantic_scope_boundary,
     "2B-SCOPE-003": _semantic_scope_boundary,
@@ -244,14 +354,37 @@ def semantic_case_names(requirement_ids: tuple[str, ...] | list[str]) -> tuple[s
     )
 
 
+def _resolve_semantic_function(case_name: str):
+    module_name, function_name = case_name.split(":", 1)
+    return (
+        globals()[function_name]
+        if module_name == LOCAL_CONTRACT_MODULE
+        else getattr(importlib.import_module(module_name), function_name)
+    )
+
+
+def _semantic_contract_hash(
+    test_id: str, requirement_ids: tuple[str, ...], case_names: tuple[str, ...]
+) -> str:
+    source_hashes = []
+    for case_name in case_names:
+        source = inspect.getsource(_resolve_semantic_function(case_name))
+        normalized_source = "\n".join(line.rstrip() for line in source.splitlines()) + "\n"
+        source_hashes.append((case_name, canonical_sha256(normalized_source)))
+    return canonical_sha256(
+        {
+            "test_id": test_id,
+            "requirement_ids": requirement_ids,
+            "semantic_cases": case_names,
+            "semantic_source_hashes": tuple(source_hashes),
+            "schema_version": SEMANTIC_CASE_SCHEMA_VERSION,
+        }
+    )
+
+
 def _execute_semantic_cases(case_names: tuple[str, ...]) -> tuple[str, ...]:
     for case_name in case_names:
-        module_name, function_name = case_name.split(":", 1)
-        function = (
-            globals()[function_name]
-            if module_name == LOCAL_CONTRACT_MODULE
-            else getattr(importlib.import_module(module_name), function_name)
-        )
+        function = _resolve_semantic_function(case_name)
         if "tmp_path" in inspect.signature(function).parameters:
             with tempfile.TemporaryDirectory(prefix="pa-2b-semantic-") as directory:
                 function(Path(directory))
@@ -303,12 +436,7 @@ def test_frozen_matrix_case(case: RegisteredTest) -> None:
     expected_semantic_cases = semantic_case_names(case.requirement_ids)
     assert record["requirement_ids"] == case.requirement_ids
     assert record["semantic_cases"] == expected_semantic_cases
-    assert record["semantic_contract_hash"] == canonical_sha256(
-        {
-            "test_id": case.test_id,
-            "requirement_ids": case.requirement_ids,
-            "semantic_cases": expected_semantic_cases,
-            "schema_version": SEMANTIC_CASE_SCHEMA_VERSION,
-        }
+    assert record["semantic_contract_hash"] == _semantic_contract_hash(
+        case.test_id, case.requirement_ids, expected_semantic_cases
     )
     assert _execute_semantic_cases(expected_semantic_cases) == expected_semantic_cases
