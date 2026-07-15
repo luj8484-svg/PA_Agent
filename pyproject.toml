@@ -65,5 +65,7 @@ markers = [
     "property: property-based tests (hypothesis)",
     "integration: integration tests crossing module boundaries",
     "e2e: end-to-end smoke tests",
+    "gui: legacy PyQt GUI tests (requires --run-gui-tests)",
+    "legacy_e2e: legacy GUI end-to-end tests (requires --run-legacy-e2e)",
     "live: requires real API key via environment variable (never uses config/settings.json)",
 ]
