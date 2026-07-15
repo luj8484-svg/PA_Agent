@@ -121,12 +121,10 @@ def _reject(inputs: EntryPlanningInputs, *reasons: ExecutionRejectionReason) -> 
     )
 
 
-def _validate_chain(inputs: EntryPlanningInputs) -> None:
+def _validate_candidate_intent_bounds(inputs: EntryPlanningInputs) -> None:
     candidate = inputs.candidate
     intent = inputs.intent
     target = intent.target_execution_time_utc_ms
-    if inputs.target_open is None or inputs.account is None:
-        raise ValueError("required entry planning evidence is unavailable")
     if (
         intent.candidate_id != candidate.candidate_id
         or intent.symbol != candidate.symbol
@@ -142,6 +140,15 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
         raise ValueError("entry target is outside the experimental split")
     if maximum_exit >= inputs.split_end_utc_ms:
         raise ValueError("maximum exit is outside the experimental split")
+
+
+def _validate_chain(inputs: EntryPlanningInputs) -> None:
+    _validate_candidate_intent_bounds(inputs)
+    candidate = inputs.candidate
+    intent = inputs.intent
+    target = intent.target_execution_time_utc_ms
+    if inputs.target_open is None or inputs.account is None:
+        raise ValueError("required entry planning evidence is unavailable")
     if (
         inputs.target_open.symbol != intent.symbol
         or inputs.target_open.open_time_utc_ms != target
@@ -266,6 +273,10 @@ def build_entry_execution_plan(
         reasons.append(ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
     if not isinstance(inputs.funding_risk, CoveredFundingRiskConfigSnapshot):
         reasons.append(ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE)
+    try:
+        _validate_candidate_intent_bounds(inputs)
+    except ValueError:
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
     dependencies_ready = (
         inputs.target_open is not None
         and inputs.account is not None

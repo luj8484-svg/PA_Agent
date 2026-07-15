@@ -130,6 +130,8 @@ def test_portfolio_rejection_uses_the_formal_batch_subject() -> None:
     assert result.subject is subject
     assert result.disposition is RejectionDisposition.CANDIDATE_REJECTED
     assert result.retry_allowed is True
+    illegal_pre_batch_reason = reject(subject, (ExecutionRejectionReason.BATCH_INCOMPLETE,))
+    assert illegal_pre_batch_reason.reason is ExecutionRejectionReason.DATA_INVALID
 
 
 @registered("PT-BATCH-SUBJECT-STABLE", "2B-PORT-005")

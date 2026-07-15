@@ -21,7 +21,9 @@ from pa_agent.research_backtest.domain.batches import (
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.enums import ResearchStage, ResolutionKind, Side
 from pa_agent.research_backtest.domain.market_inputs import target_minute_open_snapshot
-from pa_agent.research_backtest.domain.rejections import portfolio_batch_subject_ref
+from pa_agent.research_backtest.domain.rejections import (
+    entry_intent_subject_ref_from_identity,
+)
 from pa_agent.research_backtest.domain.sizing import position_sizing_result
 from pa_agent.research_backtest.planning.portfolio import (
     resolve_batch_completeness,
@@ -198,14 +200,11 @@ def test_each_expected_intent_requires_exactly_one_resolution() -> None:
             code_commit=COMMIT,
             dependency_lock_hash=LOCK,
         )
-    batch, acct, _, _, opens, stage = complete()
-    subject = portfolio_batch_subject_ref(
-        portfolio_planning_batch_id=batch.batch_id,
-        symbols=batch.ordered_symbols,
-        ordered_entry_intent_ids=batch.ordered_entry_intent_ids,
-        batch_content_hash=batch.batch_content_hash,
-        account_snapshot_hash=acct.snapshot_hash,
-        target_open_snapshot_hashes=tuple(item.snapshot_content_hash for item in opens),
+    subject = entry_intent_subject_ref_from_identity(
+        entry_intent_id=expected[0].entry_intent_id,
+        candidate_id="cand_" + "1" * 24,
+        symbol=expected[0].symbol,
+        intent_content_hash=SHA,
     )
     rejection = resolve_batch_completeness(
         expected,
@@ -213,11 +212,12 @@ def test_each_expected_intent_requires_exactly_one_resolution() -> None:
         subject=subject,
         completeness_event_time_utc_ms=TIME,
         source_event_id="incomplete-event",
-        stage=stage,
+        stage=ResearchStage.BACKTEST,
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
     )
     assert rejection.reason.value == "BATCH_INCOMPLETE"
+    assert type(rejection.subject).__name__ == "EntryIntentSubjectRef"
 
 
 @registered("UT-TIME-014", "2B-TIME-014")

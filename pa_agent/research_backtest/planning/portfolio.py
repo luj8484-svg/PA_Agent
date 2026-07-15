@@ -14,8 +14,8 @@ from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ResearchStage
 from pa_agent.research_backtest.domain.market_inputs import TargetMinuteOpenSnapshot
 from pa_agent.research_backtest.domain.rejections import (
+    EntryIntentSubjectRef,
     ExecutionRejection,
-    PortfolioBatchSubjectRef,
     portfolio_batch_subject_ref,
     rejection_fact,
 )
@@ -41,7 +41,7 @@ def resolve_batch_completeness(
     expected_intents: tuple[ExpectedIntentRef, ...],
     resolutions: tuple[ResolutionRef, ...],
     *,
-    subject: PortfolioBatchSubjectRef,
+    subject: EntryIntentSubjectRef,
     completeness_event_time_utc_ms: int,
     source_event_id: str,
     stage: ResearchStage,
@@ -64,7 +64,7 @@ def resolve_batch_completeness(
             event_time_utc_ms=completeness_event_time_utc_ms,
             facts=(rejection_fact(reason),),
             stage=stage,
-            relevant_version_hashes=(("batch_subject", subject.subject_content_hash),),
+            relevant_version_hashes=(("entry_intent_subject", subject.subject_content_hash),),
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
         )
@@ -83,7 +83,7 @@ def resolve_batch_completeness(
             event_time_utc_ms=completeness_event_time_utc_ms,
             facts=(rejection_fact(ExecutionRejectionReason.DATA_INVALID),),
             stage=stage,
-            relevant_version_hashes=(("batch_subject", subject.subject_content_hash),),
+            relevant_version_hashes=(("entry_intent_subject", subject.subject_content_hash),),
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
         )

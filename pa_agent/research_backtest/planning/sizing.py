@@ -52,6 +52,7 @@ from pa_agent.research_backtest.versions import (
 @dataclass(frozen=True, slots=True)
 class SizingInputs:
     intent_id: str
+    target_execution_time_utc_ms: int
     symbol: str
     side: Side
     candidate: StrategyCandidate
@@ -70,7 +71,7 @@ class SizingInputs:
     dependency_lock_hash: str
 
 
-def _reject(inputs: SizingInputs, reason: str | ExecutionRejectionReason) -> ExecutionRejection:
+def _reject(inputs: SizingInputs, *reasons: str | ExecutionRejectionReason) -> ExecutionRejection:
     version_hashes = [
         ("account", inputs.account.snapshot_hash),
         ("contract", inputs.contract.coverage_content_hash),
@@ -80,7 +81,7 @@ def _reject(inputs: SizingInputs, reason: str | ExecutionRejectionReason) -> Exe
     return choose_rejection(
         subject=inputs.subject,
         event_time_utc_ms=inputs.account.event_time_utc_ms,
-        facts=(rejection_fact(reason),),
+        facts=tuple(rejection_fact(reason) for reason in reasons),
         stage=inputs.stage,
         relevant_version_hashes=tuple(sorted(version_hashes)),
         code_commit=inputs.code_commit,
@@ -89,73 +90,104 @@ def _reject(inputs: SizingInputs, reason: str | ExecutionRejectionReason) -> Exe
 
 
 def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRejection:
-    if inputs.subject.entry_intent_id != inputs.intent_id:
-        raise ValueError("sizing subject does not match entry Intent")
     if not isinstance(inputs.stage, ResearchStage):
         raise ValueError("invalid sizing research stage")
-    if isinstance(inputs.contract, UnavailableContractRuleCoverage):
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
-    try:
-        ensure_contract_usable(inputs.contract, inputs.stage)
-    except ContractRuleUnavailableError:
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
-    except ContractRuleExpiredError:
-        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
-    except ValueError:
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
-    if inputs.cost is None:
-        return _reject(inputs, ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
-    if inputs.account_evidence_bundle is None or inputs.account_evidence_records is None:
-        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
-    if inputs.open_risk_evidence_records is None:
-        return _reject(inputs, ExecutionRejectionReason.OPEN_RISK_MODEL_UNAVAILABLE)
-    if inputs.open_risk_evidence_records != inputs.account_evidence_records.open_risks:
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
-    try:
-        replayed = make_account_planning_snapshot(
-            inputs.account_evidence_bundle,
-            inputs.account_evidence_records,
-            eligible_time_utc_ms=inputs.account.event_time_utc_ms,
-        )
-    except RequiredAccountEvidenceUnavailableError:
-        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
-    except ValueError:
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
-    if replayed != inputs.account:
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    reasons: list[ExecutionRejectionReason] = []
     if (
-        inputs.candidate.candidate_id != inputs.subject.candidate_id
+        inputs.subject.entry_intent_id != inputs.intent_id
+        or inputs.subject.candidate_id != inputs.candidate.candidate_id
+        or inputs.subject.symbols != (inputs.symbol,)
         or inputs.candidate.symbol != inputs.symbol
         or inputs.candidate.market_view.value != inputs.side.value
+        or type(inputs.target_execution_time_utc_ms) is not int
         or inputs.target_open.symbol != inputs.symbol
+        or inputs.target_open.open_time_utc_ms != inputs.target_execution_time_utc_ms
+        or inputs.account.event_time_utc_ms != inputs.target_execution_time_utc_ms
+        or inputs.candidate.decision_time_utc_ms >= inputs.target_execution_time_utc_ms
     ):
-        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
-    if inputs.symbol != inputs.contract.symbol or inputs.symbol != inputs.cost.symbol:
-        raise ValueError("sizing symbol does not match contract/cost evidence")
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
+    contract_usable = True
+    if isinstance(inputs.contract, UnavailableContractRuleCoverage):
+        reasons.append(ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+        contract_usable = False
+    else:
+        try:
+            ensure_contract_usable(inputs.contract, inputs.stage)
+        except ContractRuleUnavailableError:
+            reasons.append(ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+            contract_usable = False
+        except ContractRuleExpiredError:
+            reasons.append(ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
+            contract_usable = False
+        except ValueError:
+            reasons.append(ExecutionRejectionReason.DATA_INVALID)
+            contract_usable = False
+        if (
+            inputs.contract.symbol != inputs.symbol
+            or inputs.contract.query_time_utc_ms != inputs.target_execution_time_utc_ms
+        ):
+            reasons.append(ExecutionRejectionReason.DATA_INVALID)
+            contract_usable = False
+    if inputs.cost is None:
+        reasons.append(ExecutionRejectionReason.COST_MODEL_UNAVAILABLE)
+    elif inputs.cost.symbol != inputs.symbol:
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
+    if inputs.account_evidence_bundle is None or inputs.account_evidence_records is None:
+        reasons.append(ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+        replayed = None
+    else:
+        try:
+            replayed = make_account_planning_snapshot(
+                inputs.account_evidence_bundle,
+                inputs.account_evidence_records,
+                eligible_time_utc_ms=inputs.target_execution_time_utc_ms,
+            )
+        except RequiredAccountEvidenceUnavailableError:
+            reasons.append(ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+            replayed = None
+        except ValueError:
+            reasons.append(ExecutionRejectionReason.DATA_INVALID)
+            replayed = None
+        if replayed is not None and replayed != inputs.account:
+            reasons.append(ExecutionRejectionReason.DATA_INVALID)
+    if inputs.open_risk_evidence_records is None:
+        reasons.append(ExecutionRejectionReason.OPEN_RISK_MODEL_UNAVAILABLE)
+    elif (
+        inputs.account_evidence_records is not None
+        and inputs.open_risk_evidence_records != inputs.account_evidence_records.open_risks
+    ):
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
     if inputs.symbol != inputs.funding_risk.symbol:
-        raise ValueError("sizing symbol does not match funding-risk evidence")
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
     if type(inputs.funding_event_upper_bound) is not int or inputs.funding_event_upper_bound < 0:
-        raise ValueError("funding event upper bound must be nonnegative integer")
-    try:
-        adverse_gap(
-            inputs.side,
-            inputs.candidate.decision_close,
-            inputs.target_open.open_price,
-            inputs.candidate.atr14_4h,
-        )
-        geometry = price_geometry(
-            inputs.side,
-            inputs.target_open.open_price,
-            inputs.candidate.atr14_4h,
-            inputs.cost,
-            inputs.contract,
-        )
-    except SizingRejected as error:
-        return _reject(inputs, error.reason)
+        reasons.append(ExecutionRejectionReason.DATA_INVALID)
     try:
         funding_rate = effective_adverse_rate_cap(inputs.funding_risk)
     except FundingRiskConfigUnavailableError:
-        return _reject(inputs, ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE)
+        reasons.append(ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE)
+        funding_rate = None
+    geometry = None
+    if contract_usable and inputs.cost is not None:
+        try:
+            adverse_gap(
+                inputs.side,
+                inputs.candidate.decision_close,
+                inputs.target_open.open_price,
+                inputs.candidate.atr14_4h,
+            )
+            geometry = price_geometry(
+                inputs.side,
+                inputs.target_open.open_price,
+                inputs.candidate.atr14_4h,
+                inputs.cost,
+                inputs.contract,
+            )
+        except SizingRejected as error:
+            reasons.append(ExecutionRejectionReason(error.reason))
+    if reasons:
+        return _reject(inputs, *reasons)
+    if geometry is None or funding_rate is None:
+        raise AssertionError("sizing dependencies were not resolved")
     entry = geometry.expected_entry_fill_price
     stop_fill = geometry.expected_stop_fill_price
     exit_basis = geometry.planned_exit_notional_price_basis

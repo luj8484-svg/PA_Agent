@@ -13,7 +13,10 @@ from pa_agent.research_backtest.domain.accounts import (
     wallet_ledger_evidence,
 )
 from pa_agent.research_backtest.domain.candidates import strategy_candidate
-from pa_agent.research_backtest.domain.contracts import verified_contract_rule
+from pa_agent.research_backtest.domain.contracts import (
+    unavailable_contract_rule,
+    verified_contract_rule,
+)
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
 from pa_agent.research_backtest.domain.enums import (
     ExecutionRejectionReason,
@@ -179,6 +182,7 @@ def inputs(
     )
     return SizingInputs(
         intent_id=intent_id,
+        target_execution_time_utc_ms=TARGET,
         symbol="BTCUSDT",
         side=side,
         candidate=source_candidate,
@@ -219,6 +223,47 @@ def test_sizing_success_is_distinct_from_rejection() -> None:
     assert (
         position_sizing(inputs(rule=contract(effective_to=TARGET))).reason
         is ExecutionRejectionReason.CONTRACT_RULE_EXPIRED
+    )
+    value = inputs()
+    missing = position_sizing(replace(value, cost=None, account_evidence_records=None))
+    assert missing.reason is ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE
+
+    bad_candidate = object.__new__(type(value.candidate))
+    for field in fields(type(value.candidate)):
+        object.__setattr__(
+            bad_candidate,
+            field.name,
+            "ETHUSDT" if field.name == "symbol" else getattr(value.candidate, field.name),
+        )
+    unavailable = unavailable_contract_rule(
+        symbol="BTCUSDT",
+        query_time_utc_ms=TARGET,
+        unavailable_reason="ARCHIVE_NOT_FOUND",
+        searched_archive_hashes=(),
+    )
+    invalid = position_sizing(replace(value, candidate=bad_candidate, contract=unavailable))
+    assert invalid.reason is ExecutionRejectionReason.DATA_INVALID
+    wrong_time = target_minute_open_snapshot(
+        symbol="BTCUSDT",
+        open_time_utc_ms=TARGET + 60_000,
+        open_price=value.target_open.open_price,
+        source_stream_version="BINANCE_TRADE_OPEN_EVENT_V1",
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
+    )
+    assert (
+        position_sizing(replace(value, target_open=wrong_time)).reason
+        is ExecutionRejectionReason.DATA_INVALID
+    )
+    wrong_subject = entry_intent_subject_ref_from_identity(
+        entry_intent_id=value.intent_id,
+        candidate_id=value.candidate.candidate_id,
+        symbol="ETHUSDT",
+        intent_content_hash="9" * 64,
+    )
+    assert (
+        position_sizing(replace(value, subject=wrong_subject)).reason
+        is ExecutionRejectionReason.DATA_INVALID
     )
 
 

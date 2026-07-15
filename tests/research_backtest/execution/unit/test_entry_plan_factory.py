@@ -103,6 +103,11 @@ def test_equity_must_replay_from_the_supplied_account_evidence() -> None:
         replace(inputs, account=forged, contract=unavailable, target_open=None)
     )
     assert multi.reason is ExecutionRejectionReason.DATA_INVALID
+    forged_candidate = _corrupt_frozen(inputs.candidate, symbol="ETHUSDT")
+    result = build_entry_execution_plan(
+        replace(inputs, candidate=forged_candidate, contract=unavailable)
+    )
+    assert result.reason is ExecutionRejectionReason.DATA_INVALID
 
 
 @registered("UT-RT-052", "2B-RISK-012")

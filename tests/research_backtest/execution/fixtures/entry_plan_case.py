@@ -174,6 +174,7 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
     sizing = position_sizing(
         SizingInputs(
             intent_id=intent.intent_id,
+            target_execution_time_utc_ms=TARGET_TIME,
             symbol=intent.symbol,
             side=intent.side,
             candidate=candidate,
