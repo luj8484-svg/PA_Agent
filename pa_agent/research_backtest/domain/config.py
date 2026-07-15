@@ -25,9 +25,9 @@ class ExecutionTimeConfig:
             raise ValueError("unsupported execution-time version")
         if self.canonical_version != CANONICAL_2B_VERSION:
             raise ValueError("unsupported 2B Canonical version")
-        if self.entry_delay_minutes not in {0, 1, 2}:
+        if type(self.entry_delay_minutes) is not int or self.entry_delay_minutes not in {0, 1, 2}:
             raise ValueError("entry delay must be 0, 1, or 2 minutes")
-        if self.exit_delay_minutes not in {0, 1, 2}:
+        if type(self.exit_delay_minutes) is not int or self.exit_delay_minutes not in {0, 1, 2}:
             raise ValueError("exit delay must be 0, 1, or 2 minutes")
         if not isinstance(self.anchor_policy_version, str) or not self.anchor_policy_version:
             raise ValueError("anchor policy version must be nonempty")

@@ -4,7 +4,7 @@ from dataclasses import fields, replace
 
 import pytest
 
-from pa_agent.research_backtest.domain.enums import ExperimentState
+from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ExperimentState
 from pa_agent.research_backtest.domain.plans import EntryExecutionPlan
 from pa_agent.research_backtest.planning.factory import build_entry_execution_plan
 from tests.research_backtest.execution.fixtures.entry_plan_case import (
@@ -69,3 +69,28 @@ def test_entry_plan_factory_is_pure_and_plan_identity_self_validates() -> None:
     assert before == (inputs.intent.canonical_json(), inputs.account.canonical_json())
     with pytest.raises(ValueError, match="Canonical content"):
         replace(first, plan_id="eplan_" + "0" * 24)
+
+
+def _corrupt_frozen(value, **changes):
+    forged = object.__new__(type(value))
+    for field in fields(type(value)):
+        object.__setattr__(forged, field.name, changes.get(field.name, getattr(value, field.name)))
+    return forged
+
+
+@registered("UT-RT-051", "2B-RISK-011")
+def test_equity_must_replay_from_the_supplied_account_evidence() -> None:
+    inputs = complete_entry_inputs()
+    forged = _corrupt_frozen(inputs.account, current_equity=inputs.account.current_equity + 1)
+    result = build_entry_execution_plan(replace(inputs, account=forged))
+    assert result.reason is ExecutionRejectionReason.DATA_INVALID
+
+
+@registered("UT-RT-052", "2B-RISK-012")
+def test_risk_aggregates_must_replay_from_the_supplied_account_evidence() -> None:
+    inputs = complete_entry_inputs()
+    forged = _corrupt_frozen(
+        inputs.account, existing_open_risk=inputs.account.existing_open_risk + 1
+    )
+    result = build_entry_execution_plan(replace(inputs, account=forged))
+    assert result.reason is ExecutionRejectionReason.DATA_INVALID

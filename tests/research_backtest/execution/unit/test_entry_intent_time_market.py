@@ -8,7 +8,13 @@ import pytest
 from pa_agent.research_backtest.domain.candidates import strategy_candidate
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
 from pa_agent.research_backtest.domain.config import execution_time_config
-from pa_agent.research_backtest.domain.enums import MarketReason, MarketView, TrendState
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    MarketReason,
+    MarketView,
+    ResearchStage,
+    TrendState,
+)
 from pa_agent.research_backtest.domain.market_inputs import (
     target_event_watermark,
     target_minute_open_snapshot,
@@ -78,11 +84,20 @@ def config(delay: int = 1):
     return execution_time_config(entry_delay_minutes=delay, exit_delay_minutes=1)
 
 
+@registered("PT-DELAY-DOMAIN", "2B-TIME-002")
+def test_boolean_is_not_a_valid_integer_execution_delay() -> None:
+    with pytest.raises(ValueError, match="entry delay"):
+        execution_time_config(entry_delay_minutes=True, exit_delay_minutes=1)
+    with pytest.raises(ValueError, match="exit delay"):
+        execution_time_config(entry_delay_minutes=1, exit_delay_minutes=False)
+
+
 def intent(delay: int = 1):
     return make_entry_intent(
         candidate(),
         config(delay),
         computational_experiment_id="f" * 64,
+        stage=ResearchStage.BACKTEST,
         code_commit=COMMIT,
         dependency_lock_hash="e" * 64,
     )
@@ -95,6 +110,7 @@ def test_only_actionable_long_or_short_candidate_produces_entry_intent() -> None
             candidate(market_view=MarketView.LONG),
             config(),
             computational_experiment_id="f" * 64,
+            stage=ResearchStage.BACKTEST,
             code_commit=COMMIT,
             dependency_lock_hash="e" * 64,
         ).side.value
@@ -105,19 +121,21 @@ def test_only_actionable_long_or_short_candidate_produces_entry_intent() -> None
             candidate(market_view=MarketView.SHORT),
             config(),
             computational_experiment_id="f" * 64,
+            stage=ResearchStage.BACKTEST,
             code_commit=COMMIT,
             dependency_lock_hash="e" * 64,
         ).side.value
         == "SHORT"
     )
-    with pytest.raises(ValueError, match="not actionable"):
-        make_entry_intent(
-            candidate(market_view=MarketView.NO_SETUP),
-            config(),
-            computational_experiment_id="f" * 64,
-            code_commit=COMMIT,
-            dependency_lock_hash="e" * 64,
-        )
+    rejection = make_entry_intent(
+        candidate(market_view=MarketView.NO_SETUP),
+        config(),
+        computational_experiment_id="f" * 64,
+        stage=ResearchStage.BACKTEST,
+        code_commit=COMMIT,
+        dependency_lock_hash="e" * 64,
+    )
+    assert rejection.reason is ExecutionRejectionReason.CANDIDATE_NOT_ACTIONABLE
 
 
 @registered("UT-LIFE-002", "2B-LIFE-002")
@@ -305,6 +323,7 @@ def test_delay_changes_intent_identity_but_not_candidate_identity() -> None:
             source,
             config(delay),
             computational_experiment_id="f" * 64,
+            stage=ResearchStage.BACKTEST,
             code_commit=COMMIT,
             dependency_lock_hash="e" * 64,
         )

@@ -3,11 +3,12 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pa_agent.research_backtest.domain.accounts import AccountPlanningSnapshot
-from pa_agent.research_backtest.domain.base import require_sha256
 from pa_agent.research_backtest.domain.batches import PortfolioPlanningBatch
 from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ResearchStage
+from pa_agent.research_backtest.domain.market_inputs import TargetMinuteOpenSnapshot
 from pa_agent.research_backtest.domain.rejections import (
+    ExecutionRejection,
     portfolio_batch_subject_ref,
     rejection_fact,
 )
@@ -18,7 +19,7 @@ from pa_agent.research_backtest.domain.scaling import (
     portfolio_scaling_result,
     rejected_scaling_item,
 )
-from pa_agent.research_backtest.domain.sizing import PositionSizingResult, SizingRejected
+from pa_agent.research_backtest.domain.sizing import PositionSizingResult
 from pa_agent.research_backtest.planning.prices import floor_to_step
 from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.versions import (
@@ -34,15 +35,23 @@ def scale_portfolio(
     account: AccountPlanningSnapshot,
     sizing_results: tuple[PositionSizingResult, ...],
     contracts: dict[str, ContractRuleCoverage],
-    target_open_snapshot_hashes: tuple[str, ...],
-) -> PortfolioScalingResult:
+    target_open_snapshots: tuple[TargetMinuteOpenSnapshot, ...],
+    stage: ResearchStage,
+) -> PortfolioScalingResult | ExecutionRejection:
+    if not isinstance(stage, ResearchStage):
+        raise ValueError("invalid research stage")
     ordered = tuple(sorted(sizing_results, key=lambda item: (item.symbol, item.result_id)))
     if tuple(item.result_id for item in ordered) != batch.ordered_successful_sizing_result_ids:
         raise ValueError("sizing inputs do not equal batch successful projection")
-    if len(target_open_snapshot_hashes) != len(batch.ordered_symbols):
-        raise ValueError("target-open hashes do not match batch symbol cardinality")
-    for value in target_open_snapshot_hashes:
-        require_sha256(value, "target_open_snapshot_hash")
+    ordered_opens = tuple(sorted(target_open_snapshots, key=lambda item: item.symbol))
+    if (
+        len(ordered_opens) != len(batch.target_open_snapshot_ids)
+        or tuple(item.snapshot_id for item in ordered_opens) != batch.target_open_snapshot_ids
+        or tuple(item.symbol for item in ordered_opens) != tuple(item.symbol for item in ordered)
+        or any(item.open_time_utc_ms != batch.eligible_time_utc_ms for item in ordered_opens)
+    ):
+        raise ValueError("target-open evidence does not match batch rows")
+    target_open_snapshot_hashes = tuple(item.snapshot_content_hash for item in ordered_opens)
     if (
         account.snapshot_id != batch.account_snapshot_id
         or account.snapshot_hash != batch.account_snapshot_hash
@@ -56,19 +65,6 @@ def scale_portfolio(
         raise ValueError("sizing result account evidence does not match batch")
     base_risk = account.existing_open_risk + account.pending_plan_risk
     risk_limit = account.current_equity * Decimal("0.01")
-    if base_risk >= risk_limit:
-        raise SizingRejected("TOTAL_RISK_ALREADY_AT_LIMIT")
-    remaining = risk_limit - base_risk
-    if account.pending_plan_reserve > account.available_balance:
-        raise ValueError("pending reserve exceeds available balance")
-    deployable = account.available_balance - account.pending_plan_reserve
-    sum_risk = sum((item.unscaled_planned_risk for item in ordered), Decimal("0"))
-    sum_cash = sum((item.unscaled_required_cash for item in ordered), Decimal("0"))
-    if deployable == 0 and sum_cash > 0:
-        raise SizingRejected("INSUFFICIENT_AVAILABLE_BALANCE")
-    risk_scale = Decimal("1") if sum_risk == 0 else remaining / sum_risk
-    cash_scale = Decimal("1") if sum_cash == 0 else deployable / sum_cash
-    final_scale = min(Decimal("1"), risk_scale, cash_scale)
     subject = portfolio_batch_subject_ref(
         portfolio_planning_batch_id=batch.batch_id,
         symbols=batch.ordered_symbols,
@@ -77,6 +73,31 @@ def scale_portfolio(
         account_snapshot_hash=batch.account_snapshot_hash,
         target_open_snapshot_hashes=target_open_snapshot_hashes,
     )
+
+    def reject(reason: ExecutionRejectionReason) -> ExecutionRejection:
+        return choose_rejection(
+            subject=subject,
+            event_time_utc_ms=batch.eligible_time_utc_ms,
+            facts=(rejection_fact(reason),),
+            stage=stage,
+            relevant_version_hashes=(("batch", batch.batch_content_hash),),
+            code_commit=batch.code_commit,
+            dependency_lock_hash=batch.dependency_lock_hash,
+        )
+
+    if base_risk >= risk_limit:
+        return reject(ExecutionRejectionReason.TOTAL_RISK_ALREADY_AT_LIMIT)
+    remaining = risk_limit - base_risk
+    if account.pending_plan_reserve > account.available_balance:
+        raise ValueError("pending reserve exceeds available balance")
+    deployable = account.available_balance - account.pending_plan_reserve
+    sum_risk = sum((item.unscaled_planned_risk for item in ordered), Decimal("0"))
+    sum_cash = sum((item.unscaled_required_cash for item in ordered), Decimal("0"))
+    if deployable == 0 and sum_cash > 0:
+        return reject(ExecutionRejectionReason.INSUFFICIENT_AVAILABLE_BALANCE)
+    risk_scale = Decimal("1") if sum_risk == 0 else remaining / sum_risk
+    cash_scale = Decimal("1") if sum_cash == 0 else deployable / sum_cash
+    final_scale = min(Decimal("1"), risk_scale, cash_scale)
     items = []
     for sizing in ordered:
         contract = contracts.get(sizing.result_id)
@@ -108,7 +129,7 @@ def scale_portfolio(
             subject=subject,
             event_time_utc_ms=batch.eligible_time_utc_ms,
             facts=(rejection_fact(reason),),
-            stage=ResearchStage.BACKTEST,
+            stage=stage,
             relevant_version_hashes=(("batch", batch.batch_content_hash),),
             code_commit=batch.code_commit,
             dependency_lock_hash=batch.dependency_lock_hash,

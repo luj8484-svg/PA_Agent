@@ -452,6 +452,25 @@ def entry_intent_subject_ref(intent: EntryIntent) -> EntryIntentSubjectRef:
     return _subject(payload, EntryIntentSubjectRef)
 
 
+def entry_intent_subject_ref_from_identity(
+    *,
+    entry_intent_id: str,
+    candidate_id: str,
+    symbol: str,
+    intent_content_hash: str,
+) -> EntryIntentSubjectRef:
+    """Build the same closed subject reference when only frozen Intent identity is available."""
+    payload = {
+        "schema_version": REJECTION_SUBJECT_REF_SCHEMA_VERSION,
+        "entry_intent_id": entry_intent_id,
+        "candidate_id": candidate_id,
+        "symbols": (symbol,),
+        "origin_ids": (candidate_id,),
+        "intent_content_hash": intent_content_hash,
+    }
+    return _subject(payload, EntryIntentSubjectRef)
+
+
 def exit_intent_subject_ref(intent: ExitIntent) -> ExitIntentSubjectRef:
     payload = {
         "schema_version": REJECTION_SUBJECT_REF_SCHEMA_VERSION,

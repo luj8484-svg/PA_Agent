@@ -67,7 +67,11 @@ class EntryIntent:
             raise ValueError("Candidate decision time must be an exact 4H close")
         if self.execution_anchor_utc_ms != self.candidate_decision_time_utc_ms + 1:
             raise ValueError("execution anchor must be the next 4H UTC open")
-        if self.execution_delay_minutes not in {0, 1, 2}:
+        if type(self.execution_delay_minutes) is not int or self.execution_delay_minutes not in {
+            0,
+            1,
+            2,
+        }:
             raise ValueError("unsupported execution delay")
         if self.target_execution_time_utc_ms != (
             self.execution_anchor_utc_ms + self.execution_delay_minutes * 60_000
@@ -210,7 +214,11 @@ class ExitIntent:
         expected_anchor = (self.condition_time_utc_ms // 60_000) * 60_000 + 60_000
         if self.execution_anchor_utc_ms != expected_anchor:
             raise ValueError("exit execution anchor must be the next minute open")
-        if self.execution_delay_minutes not in {0, 1, 2}:
+        if type(self.execution_delay_minutes) is not int or self.execution_delay_minutes not in {
+            0,
+            1,
+            2,
+        }:
             raise ValueError("unsupported exit execution delay")
         if self.target_execution_time_utc_ms != (
             expected_anchor + self.execution_delay_minutes * 60_000

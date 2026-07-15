@@ -65,6 +65,7 @@ def intent():
         candidate(),
         execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1),
         computational_experiment_id="f" * 64,
+        stage=ResearchStage.BACKTEST,
         code_commit=COMMIT,
         dependency_lock_hash="e" * 64,
     )

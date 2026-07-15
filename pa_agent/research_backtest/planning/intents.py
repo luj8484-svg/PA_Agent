@@ -4,8 +4,19 @@ from pa_agent.research_backtest.domain.base import formal_identity, require_comm
 from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
 from pa_agent.research_backtest.domain.config import ExecutionTimeConfig
-from pa_agent.research_backtest.domain.enums import MarketView, Side
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    MarketView,
+    ResearchStage,
+    Side,
+)
 from pa_agent.research_backtest.domain.intents import EntryIntent
+from pa_agent.research_backtest.domain.rejections import (
+    ExecutionRejection,
+    candidate_subject_ref,
+    rejection_fact,
+)
+from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.planning.time import entry_target_time, next_four_hour_anchor
 from pa_agent.research_backtest.versions import (
     CANONICAL_2B_VERSION,
@@ -18,11 +29,23 @@ def make_entry_intent(
     config: ExecutionTimeConfig,
     *,
     computational_experiment_id: str,
+    stage: ResearchStage,
     code_commit: str,
     dependency_lock_hash: str,
-) -> EntryIntent:
+) -> EntryIntent | ExecutionRejection:
     if candidate.market_view is MarketView.NO_SETUP:
-        raise ValueError("Candidate is not actionable")
+        return choose_rejection(
+            subject=candidate_subject_ref(candidate),
+            event_time_utc_ms=candidate.decision_time_utc_ms,
+            facts=(rejection_fact(ExecutionRejectionReason.CANDIDATE_NOT_ACTIONABLE),),
+            stage=stage,
+            relevant_version_hashes=(
+                ("indicator_config", candidate.indicator_config_hash),
+                ("strategy_config", candidate.strategy_config_hash),
+            ),
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
     if candidate.market_view not in {MarketView.LONG, MarketView.SHORT}:
         raise ValueError("Candidate market view is invalid")
     require_sha256(computational_experiment_id, "computational_experiment_id")

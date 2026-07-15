@@ -8,6 +8,8 @@ from pa_agent.research_backtest.domain.config import ExecutionTimeConfig
 from pa_agent.research_backtest.domain.contracts import (
     ApproximatedContractRuleCoverage,
     ContractRuleCoverage,
+    ContractRuleExpiredError,
+    ContractRuleUnavailableError,
     UnavailableContractRuleCoverage,
     ensure_contract_usable,
 )
@@ -98,13 +100,18 @@ def make_exit_intent(
 @dataclass(frozen=True, slots=True)
 class ExitPlanningInputs:
     intent: ExitIntent
-    target_open: TargetMinuteOpenSnapshot
+    target_open: TargetMinuteOpenSnapshot | None
     watermark: TargetEventWatermark
     contract: ContractRuleCoverage
     cost: CostModelSnapshot
     target_position_snapshot_hash: str
     code_commit: str
     dependency_lock_hash: str
+    stage: ResearchStage
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, ResearchStage):
+            raise ValueError("invalid exit-planning research stage")
 
 
 def _reject(inputs: ExitPlanningInputs, reason: ExecutionRejectionReason) -> ExecutionRejection:
@@ -112,7 +119,7 @@ def _reject(inputs: ExitPlanningInputs, reason: ExecutionRejectionReason) -> Exe
         subject=exit_intent_subject_ref(inputs.intent),
         event_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
         facts=(rejection_fact(reason),),
-        stage=ResearchStage.BACKTEST,
+        stage=inputs.stage,
         relevant_version_hashes=(
             ("contract", inputs.contract.coverage_content_hash),
             ("position", inputs.intent.position_snapshot_hash),
@@ -127,11 +134,22 @@ def build_exit_execution_plan(
 ) -> ExitExecutionPlan | ExecutionRejection:
     intent = inputs.intent
     target = intent.target_execution_time_utc_ms
+    if inputs.target_open is None:
+        if inputs.watermark.event_watermark_time_utc_ms < target:
+            raise ValueError("target event has not reached the planning watermark")
+        return _reject(inputs, ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE)
     if inputs.target_position_snapshot_hash != intent.position_snapshot_hash:
         return _reject(inputs, ExecutionRejectionReason.POSITION_SNAPSHOT_CHANGED)
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
-    ensure_contract_usable(inputs.contract, ResearchStage.BACKTEST)
+    try:
+        ensure_contract_usable(inputs.contract, inputs.stage)
+    except ContractRuleUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    except ContractRuleExpiredError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if (
         inputs.target_open.symbol != intent.symbol
         or inputs.target_open.open_time_utc_ms != target
@@ -142,7 +160,7 @@ def build_exit_execution_plan(
         or inputs.contract.query_time_utc_ms != target
         or inputs.cost.symbol != intent.symbol
     ):
-        raise ValueError("exit planning evidence does not match ExitIntent")
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if intent.full_exit_quantity % inputs.contract.step_size != 0:
         return _reject(inputs, ExecutionRejectionReason.POSITION_QUANTITY_RULE_MISMATCH)
     fill_price = expected_exit_price(

@@ -23,6 +23,7 @@ from pa_agent.research_backtest.domain.enums import (
     ExperimentState,
     MarketReason,
     MarketView,
+    ResearchStage,
     ResolutionKind,
     TrendState,
 )
@@ -35,6 +36,7 @@ from pa_agent.research_backtest.domain.market_inputs import (
     target_event_watermark,
     target_minute_open_snapshot,
 )
+from pa_agent.research_backtest.domain.rejections import entry_intent_subject_ref
 from pa_agent.research_backtest.planning.funding import count_funding_events
 from pa_agent.research_backtest.planning.intents import make_entry_intent
 from pa_agent.research_backtest.planning.portfolio import scale_portfolio
@@ -74,6 +76,7 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         candidate,
         config,
         computational_experiment_id="f" * 64,
+        stage=ResearchStage.BACKTEST,
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
     )
@@ -180,6 +183,10 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
             funding_risk=funding_risk,
             funding_event_upper_bound=event_count,
             account=account,
+            subject=entry_intent_subject_ref(intent),
+            stage=ResearchStage.BACKTEST,
+            code_commit=COMMIT,
+            dependency_lock_hash=LOCK,
         )
     )
     expected = (expected_intent_ref(intent.intent_id, intent.symbol, TARGET_TIME),)
@@ -212,7 +219,8 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         account,
         (sizing,),
         {sizing.result_id: contract},
-        (target_open.snapshot_content_hash,),
+        (target_open,),
+        ResearchStage.BACKTEST,
     )
     accepted = scaling.item_results[0]
     from pa_agent.research_backtest.planning.factory import EntryPlanningInputs
@@ -227,6 +235,9 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         funding_schedule=schedule,
         funding_risk=funding_risk,
         account=account,
+        account_evidence_bundle=bundle,
+        account_evidence_records=records,
+        stage=ResearchStage.BACKTEST,
         completeness=completeness,
         batch=batch,
         sizing=sizing,

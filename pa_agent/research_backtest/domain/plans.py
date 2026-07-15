@@ -159,6 +159,10 @@ class EntryExecutionPlan:
     def __post_init__(self) -> None:
         if self.schema_version != ENTRY_EXECUTION_PLAN_SCHEMA_VERSION:
             raise ValueError("unsupported EntryExecutionPlan schema")
+        if type(self.leverage) is not int or self.leverage != 1:
+            raise ValueError("entry plan leverage must be the exact integer 1")
+        if type(self.execution_delay_minutes) is not int:
+            raise ValueError("entry execution delay must be an exact integer")
         if self.symbol not in {"BTCUSDT", "ETHUSDT"} or not isinstance(self.side, Side):
             raise ValueError("invalid entry plan market identity")
         for name in (

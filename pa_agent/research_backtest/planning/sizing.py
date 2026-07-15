@@ -9,8 +9,20 @@ from pa_agent.research_backtest.domain.contracts import (
     UnavailableContractRuleCoverage,
 )
 from pa_agent.research_backtest.domain.costs import CostModelSnapshot
-from pa_agent.research_backtest.domain.enums import Side
-from pa_agent.research_backtest.domain.funding import FundingRiskConfigSnapshot
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    ResearchStage,
+    Side,
+)
+from pa_agent.research_backtest.domain.funding import (
+    FundingRiskConfigSnapshot,
+    FundingRiskConfigUnavailableError,
+)
+from pa_agent.research_backtest.domain.rejections import (
+    EntryIntentSubjectRef,
+    ExecutionRejection,
+    rejection_fact,
+)
 from pa_agent.research_backtest.domain.sizing import (
     PositionSizingResult,
     SizingRejected,
@@ -18,6 +30,7 @@ from pa_agent.research_backtest.domain.sizing import (
 )
 from pa_agent.research_backtest.planning.funding import effective_adverse_rate_cap
 from pa_agent.research_backtest.planning.prices import floor_to_step, price_geometry
+from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.versions import (
     POSITION_SIZING_MODEL_VERSION,
     POSITION_SIZING_RESULT_SCHEMA_VERSION,
@@ -36,25 +49,55 @@ class SizingInputs:
     funding_risk: FundingRiskConfigSnapshot
     funding_event_upper_bound: int
     account: AccountPlanningSnapshot
+    subject: EntryIntentSubjectRef
+    stage: ResearchStage
+    code_commit: str
+    dependency_lock_hash: str
 
 
-def position_sizing(inputs: SizingInputs) -> PositionSizingResult:
+def _reject(inputs: SizingInputs, reason: str | ExecutionRejectionReason) -> ExecutionRejection:
+    return choose_rejection(
+        subject=inputs.subject,
+        event_time_utc_ms=inputs.account.event_time_utc_ms,
+        facts=(rejection_fact(reason),),
+        stage=inputs.stage,
+        relevant_version_hashes=(
+            ("account", inputs.account.snapshot_hash),
+            ("contract", inputs.contract.coverage_content_hash),
+            ("cost", inputs.cost.snapshot_content_hash),
+        ),
+        code_commit=inputs.code_commit,
+        dependency_lock_hash=inputs.dependency_lock_hash,
+    )
+
+
+def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRejection:
+    if inputs.subject.entry_intent_id != inputs.intent_id:
+        raise ValueError("sizing subject does not match entry Intent")
+    if not isinstance(inputs.stage, ResearchStage):
+        raise ValueError("invalid sizing research stage")
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
-        raise SizingRejected("CONTRACT_RULE_UNAVAILABLE")
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
     if inputs.symbol != inputs.contract.symbol or inputs.symbol != inputs.cost.symbol:
         raise ValueError("sizing symbol does not match contract/cost evidence")
     if inputs.symbol != inputs.funding_risk.symbol:
         raise ValueError("sizing symbol does not match funding-risk evidence")
     if type(inputs.funding_event_upper_bound) is not int or inputs.funding_event_upper_bound < 0:
         raise ValueError("funding event upper bound must be nonnegative integer")
-    geometry = price_geometry(
-        inputs.side,
-        inputs.reference_price,
-        inputs.atr,
-        inputs.cost,
-        inputs.contract,
-    )
-    funding_rate = effective_adverse_rate_cap(inputs.funding_risk)
+    try:
+        geometry = price_geometry(
+            inputs.side,
+            inputs.reference_price,
+            inputs.atr,
+            inputs.cost,
+            inputs.contract,
+        )
+    except SizingRejected as error:
+        return _reject(inputs, error.reason)
+    try:
+        funding_rate = effective_adverse_rate_cap(inputs.funding_risk)
+    except FundingRiskConfigUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE)
     entry = geometry.expected_entry_fill_price
     stop_fill = geometry.expected_stop_fill_price
     exit_basis = geometry.planned_exit_notional_price_basis
@@ -73,11 +116,11 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult:
     raw_quantity = budget / unit_risk
     step_quantity = floor_to_step(raw_quantity, inputs.contract.step_size)
     if step_quantity == 0:
-        raise SizingRejected("QUANTITY_ROUNDED_TO_ZERO")
+        return _reject(inputs, ExecutionRejectionReason.QUANTITY_ROUNDED_TO_ZERO)
     if step_quantity < inputs.contract.min_qty:
-        raise SizingRejected("BELOW_MIN_QTY")
+        return _reject(inputs, ExecutionRejectionReason.BELOW_MIN_QTY)
     if step_quantity * entry < inputs.contract.min_notional:
-        raise SizingRejected("BELOW_MIN_NOTIONAL")
+        return _reject(inputs, ExecutionRejectionReason.BELOW_MIN_NOTIONAL)
     planned_risk = step_quantity * unit_risk
     if planned_risk > budget:
         raise ValueError("floor-quantized quantity exceeded risk budget")

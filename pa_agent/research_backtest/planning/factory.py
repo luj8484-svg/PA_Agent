@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from pa_agent.research_backtest.domain.accounts import AccountPlanningSnapshot
+from pa_agent.research_backtest.domain.accounts import (
+    AccountEvidenceRecords,
+    AccountPlanningEvidenceBundle,
+    AccountPlanningSnapshot,
+    RequiredAccountEvidenceUnavailableError,
+    make_account_planning_snapshot,
+)
 from pa_agent.research_backtest.domain.batches import (
     PortfolioBatchCompletenessSnapshot,
     PortfolioPlanningBatch,
@@ -12,6 +18,8 @@ from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.contracts import (
     ApproximatedContractRuleCoverage,
     ContractRuleCoverage,
+    ContractRuleExpiredError,
+    ContractRuleUnavailableError,
     UnavailableContractRuleCoverage,
     ensure_contract_usable,
 )
@@ -30,6 +38,7 @@ from pa_agent.research_backtest.domain.funding import (
     CoveredFundingRiskConfigSnapshot,
     FundingRiskConfigSnapshot,
     FundingScheduleSnapshot,
+    FundingScheduleUnverifiedError,
 )
 from pa_agent.research_backtest.domain.intents import EntryIntent
 from pa_agent.research_backtest.domain.market_inputs import (
@@ -72,6 +81,9 @@ class EntryPlanningInputs:
     funding_schedule: FundingScheduleSnapshot
     funding_risk: FundingRiskConfigSnapshot
     account: AccountPlanningSnapshot | None
+    account_evidence_bundle: AccountPlanningEvidenceBundle | None
+    account_evidence_records: AccountEvidenceRecords | None
+    stage: ResearchStage
     completeness: PortfolioBatchCompletenessSnapshot
     batch: PortfolioPlanningBatch
     sizing: PositionSizingResult
@@ -82,16 +94,24 @@ class EntryPlanningInputs:
     code_commit: str
     dependency_lock_hash: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, ResearchStage):
+            raise ValueError("invalid entry-planning research stage")
+
 
 def _reject(inputs: EntryPlanningInputs, reason: ExecutionRejectionReason) -> ExecutionRejection:
     version_hashes = [("batch", inputs.batch.batch_content_hash)]
     if inputs.account is not None:
         version_hashes.append(("account", inputs.account.snapshot_hash))
+    if inputs.account_evidence_bundle is not None:
+        version_hashes.append(
+            ("account_evidence", inputs.account_evidence_bundle.bundle_content_hash)
+        )
     return choose_rejection(
         subject=entry_intent_subject_ref(inputs.intent),
         event_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
         facts=(rejection_fact(reason),),
-        stage=ResearchStage.BACKTEST,
+        stage=inputs.stage,
         relevant_version_hashes=tuple(sorted(version_hashes)),
         code_commit=inputs.code_commit,
         dependency_lock_hash=inputs.dependency_lock_hash,
@@ -129,7 +149,6 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
         raise ValueError("target-open or watermark evidence does not match Intent")
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         raise ValueError("contract rule is unavailable")
-    ensure_contract_usable(inputs.contract, ResearchStage.BACKTEST)
     if (
         inputs.contract.symbol != intent.symbol
         or inputs.contract.query_time_utc_ms != target
@@ -197,21 +216,51 @@ def build_entry_execution_plan(
         return _reject(inputs, ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE)
     if inputs.account is None:
         return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    if inputs.account_evidence_bundle is None or inputs.account_evidence_records is None:
+        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    try:
+        replayed_account = make_account_planning_snapshot(
+            inputs.account_evidence_bundle,
+            inputs.account_evidence_records,
+            eligible_time_utc_ms=target,
+        )
+    except RequiredAccountEvidenceUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    if replayed_account != inputs.account:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if isinstance(inputs.contract, UnavailableContractRuleCoverage):
         return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
-    _validate_chain(inputs)
+    try:
+        ensure_contract_usable(inputs.contract, inputs.stage)
+    except ContractRuleUnavailableError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
+    except ContractRuleExpiredError:
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_EXPIRED)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
+    if not isinstance(inputs.funding_risk, CoveredFundingRiskConfigSnapshot):
+        return _reject(inputs, ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE)
+    try:
+        _validate_chain(inputs)
+    except ValueError:
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     if inputs.account.experiment_state is ExperimentState.HALTED:
         return _reject(inputs, ExecutionRejectionReason.EXPERIMENT_HALTED)
     if inputs.intent.symbol in inputs.account.existing_position_symbols:
         return _reject(inputs, ExecutionRejectionReason.EXISTING_POSITION)
     maximum_exit = target + 172_800_000
-    funding_count = count_funding_events(target, maximum_exit, inputs.funding_schedule)
+    try:
+        funding_count = count_funding_events(target, maximum_exit, inputs.funding_schedule)
+    except FundingScheduleUnverifiedError:
+        return _reject(inputs, ExecutionRejectionReason.FUNDING_SCHEDULE_UNVERIFIED)
     rate_cap = effective_adverse_rate_cap(inputs.funding_risk)
     if (
         funding_count != inputs.sizing.funding_event_upper_bound
         or rate_cap != inputs.sizing.effective_adverse_rate_cap
     ):
-        raise ValueError("funding evidence contradicts position sizing")
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     quantity = inputs.accepted_item.final_quantity
     notional = quantity * inputs.sizing.expected_entry_fill_price
     planned_risk = quantity * inputs.sizing.unit_risk
@@ -231,7 +280,7 @@ def build_entry_execution_plan(
         or inputs.accepted_item.final_planned_risk != planned_risk
         or inputs.accepted_item.final_required_cash != required_cash
     ):
-        raise ValueError("accepted scaling item does not match final plan formulas")
+        return _reject(inputs, ExecutionRejectionReason.DATA_INVALID)
     accepted_risk = sum(
         item.final_planned_risk
         for item in inputs.scaling.item_results
@@ -241,7 +290,7 @@ def build_entry_execution_plan(
         inputs.account.existing_open_risk + inputs.account.pending_plan_risk + accepted_risk
     )
     if total_risk > inputs.account.current_equity * Decimal("0.01"):
-        raise ValueError("final batch exceeds total open-risk limit")
+        return _reject(inputs, ExecutionRejectionReason.TOTAL_RISK_ALREADY_AT_LIMIT)
     approximation_watermark = (
         inputs.contract.approximation_watermark
         if isinstance(inputs.contract, ApproximatedContractRuleCoverage)

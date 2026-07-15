@@ -8,7 +8,7 @@ import pytest
 from pa_agent.research_backtest.domain.config import execution_time_config
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
-from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
+from pa_agent.research_backtest.domain.enums import ResearchStage, ScheduledExitReason, Side
 from pa_agent.research_backtest.domain.intents import exit_condition_snapshot
 from pa_agent.research_backtest.domain.market_inputs import (
     target_event_watermark,
@@ -117,6 +117,7 @@ def planning_inputs(
         target_position_snapshot_hash=SHA,
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
+        stage=ResearchStage.BACKTEST,
     )
 
 

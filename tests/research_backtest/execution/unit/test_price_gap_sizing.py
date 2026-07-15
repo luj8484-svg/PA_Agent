@@ -14,8 +14,13 @@ from pa_agent.research_backtest.domain.accounts import (
 )
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
 from pa_agent.research_backtest.domain.costs import cost_model_snapshot
-from pa_agent.research_backtest.domain.enums import Side
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    ResearchStage,
+    Side,
+)
 from pa_agent.research_backtest.domain.funding import covered_funding_risk_config
+from pa_agent.research_backtest.domain.rejections import entry_intent_subject_ref_from_identity
 from pa_agent.research_backtest.domain.sizing import SizingRejected
 from pa_agent.research_backtest.planning.prices import (
     PriceGeometryInvalid,
@@ -120,8 +125,9 @@ def inputs(
     rule=None,
     equity=Decimal("10000"),
 ):
+    intent_id = "eint_" + "1" * 24
     return SizingInputs(
-        intent_id="eint_" + "1" * 24,
+        intent_id=intent_id,
         symbol="BTCUSDT",
         side=side,
         reference_price=open_price,
@@ -131,14 +137,23 @@ def inputs(
         funding_risk=funding(),
         funding_event_upper_bound=3,
         account=account(equity=equity),
+        subject=entry_intent_subject_ref_from_identity(
+            entry_intent_id=intent_id,
+            candidate_id="cand_" + "1" * 24,
+            symbol="BTCUSDT",
+            intent_content_hash="9" * 64,
+        ),
+        stage=ResearchStage.BACKTEST,
+        code_commit=COMMIT,
+        dependency_lock_hash=LOCK,
     )
 
 
 @registered("UT-SCHEMA-007", "2B-SCHEMA-007")
 def test_sizing_success_is_distinct_from_rejection() -> None:
     assert position_sizing(inputs()).result_id.startswith("size_")
-    with pytest.raises(SizingRejected):
-        position_sizing(inputs(rule=contract(min_qty=Decimal("999"))))
+    result = position_sizing(inputs(rule=contract(min_qty=Decimal("999"))))
+    assert result.reason is ExecutionRejectionReason.BELOW_MIN_QTY
 
 
 @registered("UT-SCHEMA-012", "2B-SCHEMA-012")
@@ -150,9 +165,8 @@ def test_sizing_result_has_complete_cash_and_risk_inputs() -> None:
 
 @registered("UT-SCHEMA-013", "2B-SCHEMA-013")
 def test_minimum_failure_does_not_construct_nullable_result() -> None:
-    with pytest.raises(SizingRejected) as error:
-        position_sizing(inputs(rule=contract(min_notional=Decimal("999999"))))
-    assert error.value.reason == "BELOW_MIN_NOTIONAL"
+    result = position_sizing(inputs(rule=contract(min_notional=Decimal("999999"))))
+    assert result.reason is ExecutionRejectionReason.BELOW_MIN_NOTIONAL
 
 
 @registered("UT-GAP-001", "2B-GAP-001")
@@ -276,9 +290,8 @@ def test_quantity_uses_floor_to_step() -> None:
 
 @registered("UT-QTY-002", "2B-QTY-002")
 def test_quantity_zero_has_distinct_high_priority_reason() -> None:
-    with pytest.raises(SizingRejected) as error:
-        position_sizing(inputs(rule=contract(min_qty=Decimal("0")), equity=Decimal("0.001")))
-    assert error.value.reason == "QUANTITY_ROUNDED_TO_ZERO"
+    result = position_sizing(inputs(rule=contract(min_qty=Decimal("0")), equity=Decimal("0.001")))
+    assert result.reason is ExecutionRejectionReason.QUANTITY_ROUNDED_TO_ZERO
 
 
 @registered("UT-QTY-003", "2B-QTY-003")
