@@ -41,6 +41,8 @@ dev = [
 
 [project.scripts]
 pa-agent = "pa_agent.main:main"
+pa-agent-gui = "pa_agent.main:main"
+pa-research = "pa_agent.research_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["pa_agent*"]
