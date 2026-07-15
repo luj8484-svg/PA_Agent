@@ -13,3 +13,10 @@
 - RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.config`, proving EntryIntent, execution-time config, and target-open evidence did not exist.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_entry_intent_time_market.py -q`
 - GREEN result: `13 passed`; exact 4H anchors and 0/1/2-minute targets, closed EntryIntent/Open schemas, independent watermark evidence, missing-target handling, and consumption-time identity invariance passed.
+
+## Task 3 — Contract, cost, funding schedule, and funding risk
+
+- RED command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_contract_cost_funding.py -q`
+- RED result: collection failed with `ModuleNotFoundError: pa_agent.research_backtest.domain.contracts`, after the independent funding-window reference was present and before production formulas existed.
+- GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_contract_cost_funding.py -q`
+- GREEN result: `27 passed`; contract tagged unions/gates, cost snapshots, explicit funding windows, `(entry,maxExit]`, coverage fail-closed behavior, independent funding-risk evidence, and the seven-window 48h reference comparison passed.
