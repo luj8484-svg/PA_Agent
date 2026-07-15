@@ -160,12 +160,12 @@ def complete(*, reverse=False, eth_min=Decimal("0"), balance=Decimal("10000")):
         dependency_lock_hash=LOCK,
     )
     rules = {btc.result_id: btc_rule, eth.result_id: eth_rule}
-    return batch, acct, (btc, eth), rules
+    return batch, acct, (btc, eth), rules, ("4" * 64, "5" * 64)
 
 
 @registered("UT-SCHEMA-018", "2B-SCHEMA-018")
 def test_completeness_is_a_formal_content_addressed_object() -> None:
-    batch, _, _, _ = complete()
+    batch, _, _, _, _ = complete()
     assert batch.completeness_snapshot_id.startswith("bcomplete_")
     assert batch.ordered_entry_intent_ids
 
@@ -207,8 +207,8 @@ def test_completeness_event_cannot_precede_eligible_time() -> None:
 
 @registered("UT-PORT-001", "2B-PORT-001")
 def test_same_target_items_scale_together_after_complete_batch() -> None:
-    batch, acct, results, rules = complete(balance=Decimal("1000"))
-    scaled = scale_portfolio(batch, acct, results, rules)
+    batch, acct, results, rules, hashes = complete(balance=Decimal("1000"))
+    scaled = scale_portfolio(batch, acct, results, rules, hashes)
     assert scaled.ordered_input_result_ids == batch.ordered_successful_sizing_result_ids
     assert len(scaled.item_results) == 2
 
@@ -223,8 +223,8 @@ def test_batch_and_scaling_are_order_invariant() -> None:
 
 @registered("UT-PORT-003", "2B-PORT-003")
 def test_final_scale_is_minimum_of_one_risk_and_cash() -> None:
-    batch, acct, results, rules = complete(balance=Decimal("1000"))
-    scaled = scale_portfolio(batch, acct, results, rules)
+    batch, acct, results, rules, hashes = complete(balance=Decimal("1000"))
+    scaled = scale_portfolio(batch, acct, results, rules, hashes)
     expected = reference_scale(
         remaining_risk=acct.current_equity * Decimal("0.01"),
         deployable_cash=acct.available_balance,
@@ -236,8 +236,8 @@ def test_final_scale_is_minimum_of_one_risk_and_cash() -> None:
 
 @registered("UT-PORT-004", "2B-PORT-004")
 def test_rejected_scaled_item_does_not_redistribute_to_other_item() -> None:
-    batch, acct, results, rules = complete(balance=Decimal("1000"), eth_min=Decimal("1"))
-    scaled = scale_portfolio(batch, acct, results, rules)
+    batch, acct, results, rules, hashes = complete(balance=Decimal("1000"), eth_min=Decimal("1"))
+    scaled = scale_portfolio(batch, acct, results, rules, hashes)
     assert scaled.final_scale == Decimal("0.1")
     assert {type(item).__name__ for item in scaled.item_results} == {
         "AcceptedScalingItem",
@@ -247,8 +247,8 @@ def test_rejected_scaled_item_does_not_redistribute_to_other_item() -> None:
 
 @registered("UT-PORT-009", "2B-PORT-009")
 def test_scaling_result_binds_exactly_one_batch() -> None:
-    batch, acct, results, rules = complete()
-    scaled = scale_portfolio(batch, acct, results, rules)
+    batch, acct, results, rules, hashes = complete()
+    scaled = scale_portfolio(batch, acct, results, rules, hashes)
     assert scaled.portfolio_planning_batch_id == batch.batch_id
     assert scaled.portfolio_planning_batch_content_hash == batch.batch_content_hash
 

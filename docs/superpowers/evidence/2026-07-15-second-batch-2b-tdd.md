@@ -62,3 +62,11 @@
 - RED result: collection failed because `ScheduledExitReason` did not exist, proving the four-reason scheduled-exit domain and its separate plan path were absent.
 - GREEN command: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution/unit/test_scheduled_exit_planning.py -q`
 - GREEN result: `5 passed`; the four scheduled reasons, strict next-minute target, price-free ExitIntent, HALT_EXIT allowance, exit-only Plan schema, unchanged position binding, and rule-rollover quantity rejection passed without protective-trigger evaluation.
+
+## Task 10 — Frozen 435-case acceptance, Golden, and red-team closure
+
+- RED command: `.\.venv\Scripts\python.exe scripts/validate_2b_test_registry.py`
+- RED result: collection failed under the repository's Chinese parent path because the validator passed a corrupted absolute pytest path and consequently could not import the local `tests` package; independently, the registry remained incomplete before the frozen matrix cases were added.
+- GREEN commands: `.\.venv\Scripts\python.exe -m pytest tests/research_backtest/execution -q` and `.\.venv\Scripts\python.exe scripts/validate_2b_test_registry.py`.
+- GREEN result: `435 passed`; `MASTER_TEST_REGISTRY_V1 PASS: documented=435 implemented=435 requirements=114`. The locked five-document registry hash, explicit-test-set hash, full Entry/Exit Canonical Golden, formula-family adapters, all 53 illegal-state cases, all 35 time-boundary cases, and all 53 red-team cases passed.
+- Self-red-team fixes: removed placeholder target-open hashes from portfolio rejection subjects; made missing target-open/account/contract evidence emit the frozen typed rejection while preserving Intent identity; corrected the scope guard so legitimate qualified `re.compile` calls are not mistaken for Python's forbidden bare `compile`; and made the registry CLI collect by relative path with the repository root on `sys.path`.

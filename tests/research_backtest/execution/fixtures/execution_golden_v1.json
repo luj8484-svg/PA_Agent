@@ -1,0 +1,15 @@
+{
+  "fixture_version": "EXECUTION_GOLDEN_V1",
+  "entry_plan_id": "eplan_99b08ebed98c4ef7d666811b",
+  "entry_plan_content_hash": "99b08ebed98c4ef7d666811b2a47fdb461cecd71d87a7cb18335c03812200473",
+  "entry_plan_canonical_sha256": "f3fc04128ff3fdc60664c8ffa20f56305578a075af205ddbd0112869c17b36be",
+  "entry_quantity": "2.462",
+  "entry_required_cash": "298.70621230",
+  "entry_total_risk_after_plan": "49.98266230",
+  "exit_plan_id": "xplan_cc5de6dbd460a29571104cbe",
+  "exit_plan_content_hash": "cc5de6dbd460a29571104cbebc6f7edd6bd9b61946edc63608142006ea62e740",
+  "exit_plan_canonical_sha256": "5f2d09ba41135da2fb5014d62c1b8f216b1bd836b06c9e04e86d3d4ef904ac53",
+  "exit_quantity": "1.234",
+  "exit_expected_fill_price": "123.4",
+  "exit_expected_fee": "0.07613780"
+}

@@ -207,7 +207,13 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
     )
-    scaling = scale_portfolio(batch, account, (sizing,), {sizing.result_id: contract})
+    scaling = scale_portfolio(
+        batch,
+        account,
+        (sizing,),
+        {sizing.result_id: contract},
+        (target_open.snapshot_content_hash,),
+    )
     accepted = scaling.item_results[0]
     from pa_agent.research_backtest.planning.factory import EntryPlanningInputs
 

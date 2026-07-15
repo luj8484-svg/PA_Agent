@@ -37,9 +37,12 @@ class MetadataCollector:
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
     collector = MetadataCollector()
     exit_code = pytest.main(
-        [str(root / "tests" / "research_backtest" / "execution"), "--collect-only", "-q"],
+        ["tests/research_backtest/execution", "--collect-only", "-q"],
         plugins=[collector],
     )
     if exit_code not in {pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED}:

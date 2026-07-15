@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pa_agent.research_backtest.domain.accounts import AccountPlanningSnapshot
+from pa_agent.research_backtest.domain.base import require_sha256
 from pa_agent.research_backtest.domain.batches import PortfolioPlanningBatch
 from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ResearchStage
@@ -33,10 +34,15 @@ def scale_portfolio(
     account: AccountPlanningSnapshot,
     sizing_results: tuple[PositionSizingResult, ...],
     contracts: dict[str, ContractRuleCoverage],
+    target_open_snapshot_hashes: tuple[str, ...],
 ) -> PortfolioScalingResult:
     ordered = tuple(sorted(sizing_results, key=lambda item: (item.symbol, item.result_id)))
     if tuple(item.result_id for item in ordered) != batch.ordered_successful_sizing_result_ids:
         raise ValueError("sizing inputs do not equal batch successful projection")
+    if len(target_open_snapshot_hashes) != len(batch.ordered_symbols):
+        raise ValueError("target-open hashes do not match batch symbol cardinality")
+    for value in target_open_snapshot_hashes:
+        require_sha256(value, "target_open_snapshot_hash")
     if (
         account.snapshot_id != batch.account_snapshot_id
         or account.snapshot_hash != batch.account_snapshot_hash
@@ -69,7 +75,7 @@ def scale_portfolio(
         ordered_entry_intent_ids=batch.ordered_entry_intent_ids,
         batch_content_hash=batch.batch_content_hash,
         account_snapshot_hash=batch.account_snapshot_hash,
-        target_open_snapshot_hashes=tuple("0" * 64 for _ in batch.ordered_symbols),
+        target_open_snapshot_hashes=target_open_snapshot_hashes,
     )
     items = []
     for sizing in ordered:

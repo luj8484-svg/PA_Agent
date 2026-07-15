@@ -164,7 +164,7 @@ def test_exit_plan_has_no_entry_risk_or_protective_trigger_fields() -> None:
     assert names.isdisjoint(forbidden)
 
 
-@registered("UT-QTY-006", "2B-QTY-006")
+@registered("UT-LIFE-011", "2B-LIFE-011")
 def test_changed_position_and_rule_rollover_mismatch_are_rejected() -> None:
     changed = build_exit_execution_plan(
         replace(planning_inputs(), target_position_snapshot_hash="0" * 64)

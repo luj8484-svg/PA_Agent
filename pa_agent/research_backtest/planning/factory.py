@@ -65,13 +65,13 @@ from pa_agent.research_backtest.versions import ENTRY_EXECUTION_PLAN_SCHEMA_VERS
 class EntryPlanningInputs:
     candidate: StrategyCandidate
     intent: EntryIntent
-    target_open: TargetMinuteOpenSnapshot
+    target_open: TargetMinuteOpenSnapshot | None
     watermark: TargetEventWatermark
     contract: ContractRuleCoverage
     cost: CostModelSnapshot
     funding_schedule: FundingScheduleSnapshot
     funding_risk: FundingRiskConfigSnapshot
-    account: AccountPlanningSnapshot
+    account: AccountPlanningSnapshot | None
     completeness: PortfolioBatchCompletenessSnapshot
     batch: PortfolioPlanningBatch
     sizing: PositionSizingResult
@@ -84,15 +84,15 @@ class EntryPlanningInputs:
 
 
 def _reject(inputs: EntryPlanningInputs, reason: ExecutionRejectionReason) -> ExecutionRejection:
+    version_hashes = [("batch", inputs.batch.batch_content_hash)]
+    if inputs.account is not None:
+        version_hashes.append(("account", inputs.account.snapshot_hash))
     return choose_rejection(
         subject=entry_intent_subject_ref(inputs.intent),
         event_time_utc_ms=inputs.intent.target_execution_time_utc_ms,
         facts=(rejection_fact(reason),),
         stage=ResearchStage.BACKTEST,
-        relevant_version_hashes=(
-            ("account", inputs.account.snapshot_hash),
-            ("batch", inputs.batch.batch_content_hash),
-        ),
+        relevant_version_hashes=tuple(sorted(version_hashes)),
         code_commit=inputs.code_commit,
         dependency_lock_hash=inputs.dependency_lock_hash,
     )
@@ -102,6 +102,8 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
     candidate = inputs.candidate
     intent = inputs.intent
     target = intent.target_execution_time_utc_ms
+    if inputs.target_open is None or inputs.account is None:
+        raise ValueError("required entry planning evidence is unavailable")
     if (
         intent.candidate_id != candidate.candidate_id
         or intent.symbol != candidate.symbol
@@ -188,12 +190,20 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
 def build_entry_execution_plan(
     inputs: EntryPlanningInputs,
 ) -> EntryExecutionPlan | ExecutionRejection:
+    target = inputs.intent.target_execution_time_utc_ms
+    if inputs.target_open is None:
+        if inputs.watermark.event_watermark_time_utc_ms < target:
+            raise ValueError("target event has not reached the planning watermark")
+        return _reject(inputs, ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE)
+    if inputs.account is None:
+        return _reject(inputs, ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE)
+    if isinstance(inputs.contract, UnavailableContractRuleCoverage):
+        return _reject(inputs, ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE)
     _validate_chain(inputs)
     if inputs.account.experiment_state is ExperimentState.HALTED:
         return _reject(inputs, ExecutionRejectionReason.EXPERIMENT_HALTED)
     if inputs.intent.symbol in inputs.account.existing_position_symbols:
         return _reject(inputs, ExecutionRejectionReason.EXISTING_POSITION)
-    target = inputs.intent.target_execution_time_utc_ms
     maximum_exit = target + 172_800_000
     funding_count = count_funding_events(target, maximum_exit, inputs.funding_schedule)
     rate_cap = effective_adverse_rate_cap(inputs.funding_risk)

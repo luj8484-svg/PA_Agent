@@ -29,6 +29,7 @@ FORBIDDEN_CALLS = {
     "write_bytes",
     "write_text",
 }
+BUILTIN_ONLY_FORBIDDEN_CALLS = {"__import__", "compile", "eval", "exec"}
 FORBIDDEN_NAMES = {
     "api_key",
     "create_order",
@@ -100,7 +101,9 @@ def scan_forbidden_capabilities(
             if isinstance(node, ast.Call):
                 name = _qualified_name(node.func)
                 leaf = name.rsplit(".", 1)[-1]
-                if leaf in FORBIDDEN_CALLS:
+                if leaf in FORBIDDEN_CALLS and not (
+                    leaf in BUILTIN_ONLY_FORBIDDEN_CALLS and "." in name
+                ):
                     violations.append(ScopeViolation(str(path), node.lineno, name))
                 if name in {"datetime.now", "datetime.utcnow", "time.time"}:
                     violations.append(ScopeViolation(str(path), node.lineno, name))
