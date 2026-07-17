@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from itertools import pairwise
 
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
-from pa_agent.research_backtest.domain.enums import Side
+from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
 from pa_agent.research_backtest.simulation.ambiguity import resolve_ambiguity
 from pa_agent.research_backtest.simulation.domain import (
     EngineState,
@@ -39,6 +40,7 @@ from pa_agent.research_backtest.simulation.inputs import (
     validate_minute_inputs,
 )
 from pa_agent.research_backtest.simulation.ledger import (
+    AccountInvariantError,
     LedgerEntry,
     LedgerKind,
     available_balance,
@@ -285,6 +287,33 @@ def process_minute(
         )
 
     events.append(_event(state, time, EVENT_STAGES[2], "STAGE"))
+    if dependencies.exit_intent_factory is not None:
+        pending_positions = {
+            getattr(intent, "position_id", None) for intent in state.pending_exit_intents
+        }
+        time_exit_intents: list[object] = []
+        time_exit_matches: list[tuple[str, tuple[object, ...]]] = []
+        for pos in state.positions:
+            if pos.position_id in pending_positions or time != pos.maximum_exit_time_utc_ms:
+                continue
+            reasons = (ScheduledExitReason.TIME_EXIT,)
+            intent = dependencies.exit_intent_factory(pos, reasons, time, state)
+            time_exit_intents.append(intent)
+            time_exit_matches.append((intent.intent_id, reasons))
+        if time_exit_intents:
+            planning.extend(time_exit_intents)
+            state = replace(
+                state,
+                pending_exit_intents=tuple(
+                    sorted(
+                        (*state.pending_exit_intents, *time_exit_intents),
+                        key=lambda item: (item.symbol, item.intent_id),
+                    )
+                ),
+                pending_exit_reason_matches=tuple(
+                    sorted((*state.pending_exit_reason_matches, *time_exit_matches))
+                ),
+            )
     events.append(_event(state, time, EVENT_STAGES[3], "STAGE"))
     for record in minute.funding_records:
         for pos in tuple(state.positions):
@@ -298,7 +327,19 @@ def process_minute(
                     state, settlement.reason, time, events, fills, ledgers, trades, planning
                 )
             entries = _funding_entries(state, pos, record, settlement)
-            state = reduce_ledger(state, entries)
+            try:
+                state = reduce_ledger(state, entries)
+            except AccountInvariantError:
+                return _invalid_result(
+                    state,
+                    "ACCOUNT_INVARIANT_VIOLATION",
+                    time,
+                    events,
+                    fills,
+                    ledgers,
+                    trades,
+                    planning,
+                )
             updated = apply_funding_to_position(pos, settlement)
             state = replace(
                 state,
@@ -362,12 +403,18 @@ def process_minute(
                 pending_exit_intents=tuple(
                     intent for intent in state.pending_exit_intents if intent not in cancelled
                 ),
+                pending_exit_reason_matches=tuple(
+                    item
+                    for item in state.pending_exit_reason_matches
+                    if item[0] not in {intent.intent_id for intent in cancelled}
+                ),
             )
 
     events.append(_event(state, time, EVENT_STAGES[5], "STAGE"))
     due_exits = tuple(
         intent
         for intent in state.pending_exit_intents
+        if intent.target_execution_time_utc_ms == time
         if any(pos.position_id == getattr(intent, "position_id", None) for pos in state.positions)
     )
     if due_exits:
@@ -376,14 +423,26 @@ def process_minute(
         planning.extend(outputs)
         for output in outputs:
             if not hasattr(output, "expected_exit_fill_price"):
-                continue
+                rejection_reason = getattr(output, "reason", "UNKNOWN")
+                rejection_code = getattr(rejection_reason, "value", str(rejection_reason))
+                return _invalid_result(
+                    state,
+                    f"SCHEDULED_EXIT_PLANNING_REJECTED:{rejection_code}",
+                    time,
+                    events,
+                    fills,
+                    ledgers,
+                    trades,
+                    planning,
+                )
             pos = next(
                 (item for item in state.positions if item.position_id == output.position_id), None
             )
             if pos is None:
                 continue
             reason = output.scheduled_exit_reason
-            fill = make_scheduled_exit_fill(output, (reason,), reason)
+            matched = dict(state.pending_exit_reason_matches).get(output.intent_id, (reason,))
+            fill = make_scheduled_exit_fill(output, matched, reason)
             state, entries, trade = apply_exit_fill(state, pos, fill)
             fills.append(fill)
             ledgers.extend(entries)
@@ -393,6 +452,9 @@ def process_minute(
             state,
             pending_exit_intents=tuple(
                 intent for intent in state.pending_exit_intents if intent.intent_id not in due_ids
+            ),
+            pending_exit_reason_matches=tuple(
+                item for item in state.pending_exit_reason_matches if item[0] not in due_ids
             ),
         )
 
@@ -520,6 +582,36 @@ def process_minute(
         fills.append(fill)
         ledgers.extend(entries)
         trades.append(trade)
+        cancelled = tuple(
+            intent
+            for intent in state.pending_exit_intents
+            if getattr(intent, "position_id", None) == pos.position_id
+        )
+        if cancelled:
+            cancelled_ids = {intent.intent_id for intent in cancelled}
+            for intent in cancelled:
+                events.append(
+                    _event(
+                        state,
+                        time,
+                        EVENT_STAGES[11],
+                        "SCHEDULED_EXIT_CANCELLED",
+                        intent.intent_id,
+                    )
+                )
+            state = replace(
+                state,
+                pending_exit_intents=tuple(
+                    intent
+                    for intent in state.pending_exit_intents
+                    if intent.intent_id not in cancelled_ids
+                ),
+                pending_exit_reason_matches=tuple(
+                    item
+                    for item in state.pending_exit_reason_matches
+                    if item[0] not in cancelled_ids
+                ),
+            )
 
     events.append(_event(state, time, EVENT_STAGES[12], "STAGE"))
     close_unrealized = _mark_total(state.positions, minute.mark_bars, "close")
@@ -543,6 +635,7 @@ def process_minute(
             getattr(intent, "position_id", None) for intent in state.pending_exit_intents
         }
         new_exit_intents: list[object] = []
+        new_exit_matches: list[tuple[str, tuple[object, ...]]] = []
         for pos in state.positions:
             if pos.position_id in pending_positions:
                 continue
@@ -562,9 +655,9 @@ def process_minute(
                 config.simulation_end_exit_open_utc_ms,
             )
             if reasons:
-                new_exit_intents.append(
-                    dependencies.exit_intent_factory(pos, reasons, close_time, state)
-                )
+                intent = dependencies.exit_intent_factory(pos, reasons, close_time, state)
+                new_exit_intents.append(intent)
+                new_exit_matches.append((intent.intent_id, reasons))
         planning.extend(new_exit_intents)
         state = replace(
             state,
@@ -573,6 +666,9 @@ def process_minute(
                     (*state.pending_exit_intents, *new_exit_intents),
                     key=lambda item: (item.symbol, item.intent_id),
                 )
+            ),
+            pending_exit_reason_matches=tuple(
+                sorted((*state.pending_exit_reason_matches, *new_exit_matches))
             ),
         )
     flat_time = state.flat_after_halt_time_utc_ms
@@ -599,6 +695,16 @@ def run_simulation(
     config: SimulationConfig,
     dependencies: EngineDependencies,
 ) -> SimulationResult:
+    minute_opens = tuple(item.minute_open_utc_ms for item in inputs.minute_slices)
+    if (
+        not minute_opens
+        or minute_opens[0] != config.simulation_start_utc_ms
+        or minute_opens[-1] != config.simulation_end_exit_open_utc_ms
+        or any(right - left != 60_000 for left, right in pairwise(minute_opens))
+    ):
+        raise ValueError(
+            "simulation inputs must cover contiguous UTC minutes from start through exit open"
+        )
     paths: list[PathRun] = []
     for path_kind in config.active_path_kinds:
         state = initial_engine_state(config, path_kind)

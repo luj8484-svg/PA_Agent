@@ -108,7 +108,7 @@ def reduce_ledger(previous: EngineState, entries: tuple[LedgerEntry, ...]) -> En
             peak_equity=max(state.peak_equity, equity),
             consumed_ledger_ids=tuple(sorted(seen)),
         )
-        validate_account_state(state)
+    validate_account_state(state)
     return state
 
 

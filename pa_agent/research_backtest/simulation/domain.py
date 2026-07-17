@@ -169,6 +169,7 @@ class EngineState:
     final_processed_time_utc_ms: int | None
     pending_entry_intents: tuple[object, ...] = ()
     pending_exit_intents: tuple[object, ...] = ()
+    pending_exit_reason_matches: tuple[tuple[str, tuple[object, ...]], ...] = ()
     seen_candidate_ids: tuple[str, ...] = ()
 
 

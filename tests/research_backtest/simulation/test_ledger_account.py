@@ -131,6 +131,30 @@ def test_margin_lock_release_conserves_wallet(amount: int) -> None:
     assert released.locked_initial_margin == Decimal("0")
 
 
+def test_ledger_batch_validates_the_final_atomic_state() -> None:
+    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+
+    allocated = replace(
+        state(),
+        wallet_balance=Decimal("20"),
+        equity=Decimal("20"),
+        peak_equity=Decimal("20"),
+        locked_initial_margin=Decimal("2"),
+        locked_fee_reserve=Decimal("3"),
+        locked_funding_reserve=Decimal("10"),
+    )
+    result = reduce_ledger(
+        allocated,
+        (
+            entry("FUNDING", "-7", "payment"),
+            entry("FUNDING_RESERVE_RELEASE", "-2", "release"),
+        ),
+    )
+    assert result.wallet_balance == Decimal("13")
+    assert result.locked_funding_reserve == Decimal("8")
+    assert result.wallet_balance - Decimal("2") - Decimal("3") - Decimal("8") == 0
+
+
 def test_only_ledger_reducer_changes_economic_state() -> None:
     from pa_agent.research_backtest.simulation.ledger import validate_account_state
 
