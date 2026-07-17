@@ -52,12 +52,14 @@ from pa_agent.research_backtest.simulation.liquidation import (
 )
 from pa_agent.research_backtest.simulation.output import PathResult
 from pa_agent.research_backtest.simulation.planning import (
+    EntryBatchPostPlanInvariantError,
     PlannerDependencies,
     choose_scheduled_reason,
     merge_scheduled_reasons,
-    plan_due_entries,
+    plan_due_entry_batch,
     plan_due_exits,
     scheduled_exit_reasons,
+    validate_entry_batch_post_plan,
 )
 from pa_agent.research_backtest.simulation.positions import (
     IsolatedPosition,
@@ -536,21 +538,30 @@ def process_minute(
         due_entries = ()
     if due_entries:
         evidence = dependencies.planning_evidence_factory(state, minute)
-        outputs = plan_due_entries(state, due_entries, time, evidence, dependencies.planners)
-        planning.extend(outputs)
-        plans = stable_entry_plan_order(
-            tuple(item for item in outputs if hasattr(item, "expected_entry_fill_price"))
-        )
-        required = sum((item.required_cash for item in plans), Decimal("0"))
-        if required <= available_balance(state):
-            for plan in plans:
-                fill = make_entry_fill(plan)
-                pos = position_from_entry_plan(plan)
-                state, entries = apply_entry_fill(state, fill, pos)
-                fills.append(fill)
-                ledgers.extend(entries)
-        else:
-            events.append(_event(state, time, EVENT_STAGES[7], "ENTRY_BATCH_INSUFFICIENT_CASH"))
+        outcome = plan_due_entry_batch(state, due_entries, time, evidence, dependencies.planners)
+        if outcome is None:
+            raise AssertionError("due entry batch produced no planning outcome")
+        planning.extend(outcome.audit_objects)
+        try:
+            validate_entry_batch_post_plan(outcome, available_balance=available_balance(state))
+        except EntryBatchPostPlanInvariantError:
+            return _invalid_result(
+                state,
+                "ENTRY_BATCH_POST_PLAN_INVARIANT_VIOLATION",
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
+        plans = stable_entry_plan_order(outcome.plans)
+        for plan in plans:
+            fill = make_entry_fill(plan)
+            pos = position_from_entry_plan(plan)
+            state, entries = apply_entry_fill(state, fill, pos)
+            fills.append(fill)
+            ledgers.extend(entries)
         due_ids = {item.intent_id for item in due_entries}
         state = replace(
             state,

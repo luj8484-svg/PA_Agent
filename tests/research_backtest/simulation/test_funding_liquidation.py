@@ -79,6 +79,7 @@ def test_funding_payment_over_remaining_reserve_is_invalid() -> None:
     result = settle_funding(tiny, funding("0.01"))
     assert isinstance(result, FundingReserveExceeded)
     assert result.reason == "FUNDING_RESERVE_EXCEEDED"
+    assert result.funding_record_id == "fund-1"
 
 
 def test_funding_symbol_mismatch_fails_closed() -> None:

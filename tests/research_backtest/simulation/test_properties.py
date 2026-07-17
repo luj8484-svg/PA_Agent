@@ -171,3 +171,96 @@ def test_property_ledger_obligation_cannot_replay(amount: Decimal) -> None:
     first = reduce_ledger(initial_engine_state(config), (item,))
     with pytest.raises(LedgerReplayError):
         reduce_ledger(first, (item,))
+
+
+@given(st.integers(min_value=1, max_value=4))
+def test_property_paths_have_identical_economics_without_ambiguity(minutes: int) -> None:
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from tests.research_backtest.simulation.test_minute_engine_output import (
+        config,
+        dependencies,
+        minute,
+    )
+
+    slices = tuple(minute(index * 60_000) for index in range(minutes + 1))
+    result = run_simulation(
+        SimulationInputs(slices, (), ()),
+        config(simulation_end_exit_open_utc_ms=minutes * 60_000),
+        dependencies(),
+    )
+
+    def economics(path):
+        return tuple(
+            (
+                tuple(
+                    (event.event_time_utc_ms, event.stage, event.kind, event.subject_id)
+                    for event in item.events
+                ),
+                item.fills,
+                item.ledger_entries,
+                item.trades,
+                tuple(point.equity for point in item.equity_points),
+            )
+            for item in path.minute_results
+        )
+
+    assert len(result.paths) == 2
+    assert economics(result.paths[0]) == economics(result.paths[1])
+
+
+@given(st.decimals(min_value="0.2", max_value="0.8", places=1))
+def test_property_first_ambiguity_is_the_first_allowed_divergence(
+    take_profit_offset: Decimal,
+) -> None:
+    from pa_agent.research_backtest.simulation.domain import PathKind, initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from tests.research_backtest.simulation.test_funding_liquidation import position
+    from tests.research_backtest.simulation.test_minute_engine_output import (
+        config,
+        dependencies,
+        minute,
+    )
+
+    cfg = config()
+    pos = replace(
+        position(),
+        stop_trigger_price=Decimal("99"),
+        take_profit_trigger_price=Decimal("100") + take_profit_offset,
+    )
+
+    def state(kind):
+        return replace(
+            initial_engine_state(cfg, kind),
+            positions=(pos,),
+            locked_initial_margin=pos.initial_margin,
+            locked_fee_reserve=pos.remaining_fee_reserve,
+            locked_funding_reserve=pos.remaining_funding_reserve,
+        )
+
+    baseline_before = state(PathKind.BASELINE)
+    conservative_before = state(PathKind.CONSERVATIVE)
+    assert replace(conservative_before, path_kind=PathKind.BASELINE) == baseline_before
+    value = minute()
+    value = replace(
+        value,
+        trade_bars=(
+            replace(
+                value.trade_bars[0],
+                low=Decimal("98.5"),
+                high=Decimal("101"),
+                close=Decimal("100"),
+            ),
+        ),
+        mark_bars=(
+            replace(
+                value.mark_bars[0],
+                low=Decimal("98.5"),
+                high=Decimal("101"),
+                close=Decimal("100"),
+            ),
+        ),
+    )
+    baseline_after = process_minute(baseline_before, value, cfg, dependencies())
+    conservative_after = process_minute(conservative_before, value, cfg, dependencies())
+    assert baseline_after.fills[0].fill_price != conservative_after.fills[0].fill_price

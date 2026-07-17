@@ -2,19 +2,63 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 
+from pa_agent.research_backtest.domain.accounts import (
+    AccountEvidenceRecords,
+    AccountPlanningEvidenceBundle,
+    AccountPlanningSnapshot,
+    OpenRiskEvidence,
+)
 from pa_agent.research_backtest.domain.base import require_sha256
+from pa_agent.research_backtest.domain.batches import (
+    PortfolioBatchCompletenessSnapshot,
+    PortfolioPlanningBatch,
+    expected_intent_ref,
+    portfolio_batch_completeness_snapshot,
+    portfolio_planning_batch,
+    resolution_ref,
+)
+from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
 from pa_agent.research_backtest.domain.config import ExecutionTimeConfig
+from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
+from pa_agent.research_backtest.domain.costs import CostModelSnapshot
 from pa_agent.research_backtest.domain.enums import (
     ResearchStage,
+    ResolutionKind,
     ScheduledExitReason,
     Side,
     TrendState,
 )
-from pa_agent.research_backtest.domain.intents import exit_condition_snapshot
+from pa_agent.research_backtest.domain.funding import (
+    FundingRiskConfigSnapshot,
+    FundingScheduleSnapshot,
+)
+from pa_agent.research_backtest.domain.intents import EntryIntent, exit_condition_snapshot
+from pa_agent.research_backtest.domain.market_inputs import (
+    TargetEventWatermark,
+    TargetMinuteOpenSnapshot,
+)
+from pa_agent.research_backtest.domain.plans import EntryExecutionPlan
+from pa_agent.research_backtest.domain.rejections import (
+    ExecutionRejection,
+    entry_intent_subject_ref,
+)
+from pa_agent.research_backtest.domain.scaling import (
+    AcceptedScalingItem,
+    PortfolioScalingResult,
+    RejectedScalingItem,
+)
+from pa_agent.research_backtest.domain.sizing import PositionSizingResult
 from pa_agent.research_backtest.planning.exits import make_exit_intent
+from pa_agent.research_backtest.planning.factory import (
+    EntryPlanningInputs,
+    build_entry_execution_plan,
+)
 from pa_agent.research_backtest.planning.intents import make_entry_intent
+from pa_agent.research_backtest.planning.portfolio import scale_portfolio
+from pa_agent.research_backtest.planning.sizing import SizingInputs, position_sizing
 from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
 from pa_agent.research_backtest.simulation.positions import IsolatedPosition
 
@@ -28,17 +72,310 @@ class PlannerDependencies:
 
 
 def production_planner_dependencies(
-    entry_inputs_factory: Callable[[object, object, object], object],
+    entry_inputs_factory: Callable[[object, tuple[object, ...], object], object],
     exit_inputs_factory: Callable[[object, object, object], object],
 ) -> PlannerDependencies:
     from pa_agent.research_backtest.planning.exits import build_exit_execution_plan
-    from pa_agent.research_backtest.planning.factory import build_entry_execution_plan
 
     return PlannerDependencies(
         entry_inputs_factory,
-        build_entry_execution_plan,
+        build_entry_batch_planning_outcome,
         exit_inputs_factory,
         build_exit_execution_plan,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EntryBatchItemEvidence:
+    candidate: StrategyCandidate
+    intent: EntryIntent
+    target_open: TargetMinuteOpenSnapshot
+    watermark: TargetEventWatermark
+    contract: ContractRuleCoverage
+    cost: CostModelSnapshot
+    funding_schedule: FundingScheduleSnapshot
+    funding_risk: FundingRiskConfigSnapshot
+    funding_event_upper_bound: int
+
+
+@dataclass(frozen=True, slots=True)
+class EntryBatchPlanningInputs:
+    items: tuple[EntryBatchItemEvidence, ...]
+    account: AccountPlanningSnapshot
+    account_evidence_bundle: AccountPlanningEvidenceBundle
+    account_evidence_records: AccountEvidenceRecords
+    open_risk_evidence_records: tuple[OpenRiskEvidence, ...]
+    stage: ResearchStage
+    split_start_utc_ms: int
+    split_end_utc_ms: int
+    code_commit: str
+    dependency_lock_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.items:
+            raise ValueError("entry batch must contain at least one item")
+        ordered = tuple(
+            sorted(self.items, key=lambda item: (item.intent.symbol, item.intent.intent_id))
+        )
+        if len({item.intent.intent_id for item in ordered}) != len(ordered):
+            raise ValueError("entry batch Intent IDs must be unique")
+        if len({item.intent.symbol for item in ordered}) != len(ordered):
+            raise ValueError("entry batch symbols must be unique")
+        target_times = {item.intent.target_execution_time_utc_ms for item in ordered}
+        if target_times != {self.account.event_time_utc_ms}:
+            raise ValueError("entry batch must share the account target minute")
+
+
+@dataclass(frozen=True, slots=True)
+class EntryBatchPlanningOutcome:
+    sizing_results: tuple[PositionSizingResult, ...]
+    execution_rejections: tuple[ExecutionRejection, ...]
+    completeness: PortfolioBatchCompletenessSnapshot
+    batch: PortfolioPlanningBatch
+    scaling: PortfolioScalingResult | ExecutionRejection | None
+    rejected_scaling_items: tuple[RejectedScalingItem, ...]
+    plan_inputs: tuple[EntryPlanningInputs, ...]
+    plans: tuple[EntryExecutionPlan, ...]
+
+    @property
+    def audit_objects(self) -> tuple[object, ...]:
+        scaling = (self.scaling,) if isinstance(self.scaling, PortfolioScalingResult) else ()
+        return (
+            *self.sizing_results,
+            *self.execution_rejections,
+            self.completeness,
+            self.batch,
+            *scaling,
+            *self.rejected_scaling_items,
+            *self.plans,
+        )
+
+
+class EntryBatchPostPlanInvariantError(ValueError):
+    pass
+
+
+def validate_entry_batch_post_plan(
+    outcome: EntryBatchPlanningOutcome,
+    *,
+    available_balance: Decimal,
+) -> None:
+    plans = outcome.plans
+    if not plans:
+        return
+    if not isinstance(outcome, EntryBatchPlanningOutcome):
+        required_cash = sum((plan.required_cash for plan in plans), Decimal("0"))
+        if required_cash > available_balance:
+            raise EntryBatchPostPlanInvariantError("planned cash exceeds available balance")
+        return
+    if not isinstance(outcome.scaling, PortfolioScalingResult) or not outcome.plan_inputs:
+        raise EntryBatchPostPlanInvariantError("plans require one formal scaling evidence chain")
+    account = outcome.plan_inputs[0].account
+    if any(item.account != account for item in outcome.plan_inputs):
+        raise EntryBatchPostPlanInvariantError("plan inputs do not share one account snapshot")
+    if account.available_balance - account.pending_plan_reserve != available_balance:
+        raise EntryBatchPostPlanInvariantError(
+            "account snapshot available balance does not match engine state"
+        )
+    if (
+        len({plan.plan_id for plan in plans}) != len(plans)
+        or len({plan.symbol for plan in plans}) != len(plans)
+        or len({plan.accepted_scaling_item_id for plan in plans}) != len(plans)
+    ):
+        raise EntryBatchPostPlanInvariantError("entry batch plans must be unique")
+    required_cash = sum((plan.required_cash for plan in plans), Decimal("0"))
+    if required_cash > available_balance:
+        raise EntryBatchPostPlanInvariantError("planned cash exceeds available balance")
+    planned_risk = sum((plan.planned_risk for plan in plans), Decimal("0"))
+    if (
+        account.existing_open_risk + account.pending_plan_risk + planned_risk
+        > account.current_equity * Decimal("0.01")
+    ):
+        raise EntryBatchPostPlanInvariantError("planned risk exceeds portfolio limit")
+    accepted = {
+        item.item_id: item
+        for item in outcome.scaling.item_results
+        if isinstance(item, AcceptedScalingItem)
+    }
+    for plan in plans:
+        item = accepted.get(plan.accepted_scaling_item_id)
+        if item is None:
+            raise EntryBatchPostPlanInvariantError("plan does not reference an accepted item")
+        if (
+            plan.portfolio_planning_batch_id != outcome.batch.batch_id
+            or plan.portfolio_planning_batch_content_hash != outcome.batch.batch_content_hash
+            or plan.portfolio_scaling_result_id != outcome.scaling.result_id
+            or plan.portfolio_scaling_result_content_hash != outcome.scaling.result_content_hash
+            or plan.account_snapshot_id != account.snapshot_id
+            or plan.account_snapshot_hash != account.snapshot_hash
+            or plan.accepted_scaling_item_content_hash != item.item_content_hash
+            or plan.symbol != item.symbol
+            or plan.planned_risk != item.final_planned_risk
+            or plan.required_cash != item.final_required_cash
+        ):
+            raise EntryBatchPostPlanInvariantError(
+                "plan batch, scaling, account, risk, or cash evidence is inconsistent"
+            )
+
+
+def build_entry_batch_planning_outcome(
+    inputs: EntryBatchPlanningInputs,
+) -> EntryBatchPlanningOutcome:
+    ordered_items = tuple(
+        sorted(inputs.items, key=lambda item: (item.intent.symbol, item.intent.intent_id))
+    )
+    sizing_results: list[PositionSizingResult] = []
+    rejections: list[ExecutionRejection] = []
+    resolutions = []
+    item_by_sizing_id: dict[str, EntryBatchItemEvidence] = {}
+    for item in ordered_items:
+        sizing = position_sizing(
+            SizingInputs(
+                intent_id=item.intent.intent_id,
+                target_execution_time_utc_ms=item.intent.target_execution_time_utc_ms,
+                symbol=item.intent.symbol,
+                side=item.intent.side,
+                candidate=item.candidate,
+                target_open=item.target_open,
+                contract=item.contract,
+                cost=item.cost,
+                funding_risk=item.funding_risk,
+                funding_event_upper_bound=item.funding_event_upper_bound,
+                account=inputs.account,
+                account_evidence_bundle=inputs.account_evidence_bundle,
+                account_evidence_records=inputs.account_evidence_records,
+                open_risk_evidence_records=inputs.open_risk_evidence_records,
+                subject=entry_intent_subject_ref(item.intent),
+                stage=inputs.stage,
+                code_commit=inputs.code_commit,
+                dependency_lock_hash=inputs.dependency_lock_hash,
+            )
+        )
+        if isinstance(sizing, ExecutionRejection):
+            rejections.append(sizing)
+            resolutions.append(
+                resolution_ref(
+                    item.intent.intent_id,
+                    item.intent.symbol,
+                    ResolutionKind.ECONOMIC_REJECTION,
+                    sizing.rejection_id,
+                    sizing.rejection_content_hash,
+                )
+            )
+        else:
+            sizing_results.append(sizing)
+            item_by_sizing_id[sizing.result_id] = item
+            resolutions.append(
+                resolution_ref(
+                    item.intent.intent_id,
+                    item.intent.symbol,
+                    ResolutionKind.SIZING_RESULT,
+                    sizing.result_id,
+                    sizing.result_content_hash,
+                )
+            )
+    target = inputs.account.event_time_utc_ms
+    expected = tuple(
+        expected_intent_ref(item.intent.intent_id, item.intent.symbol, target)
+        for item in ordered_items
+    )
+    completeness = portfolio_batch_completeness_snapshot(
+        expected,
+        tuple(resolutions),
+        completeness_event_time_utc_ms=target,
+        source_event_id=f"entry-batch-complete:{target}",
+        code_commit=inputs.code_commit,
+        dependency_lock_hash=inputs.dependency_lock_hash,
+    )
+    ordered_sizings = tuple(sorted(sizing_results, key=lambda item: (item.symbol, item.result_id)))
+    successful_items = tuple(item_by_sizing_id[item.result_id] for item in ordered_sizings)
+    batch = portfolio_planning_batch(
+        completeness,
+        inputs.account,
+        target_open_snapshot_ids=tuple(item.target_open.snapshot_id for item in successful_items),
+        code_commit=inputs.code_commit,
+        dependency_lock_hash=inputs.dependency_lock_hash,
+    )
+    if not ordered_sizings:
+        return EntryBatchPlanningOutcome(
+            (), tuple(rejections), completeness, batch, None, (), (), ()
+        )
+    scaling = scale_portfolio(
+        batch,
+        inputs.account,
+        ordered_sizings,
+        {
+            sizing.result_id: item_by_sizing_id[sizing.result_id].contract
+            for sizing in ordered_sizings
+        },
+        tuple(item.target_open for item in successful_items),
+        inputs.stage,
+    )
+    if isinstance(scaling, ExecutionRejection):
+        return EntryBatchPlanningOutcome(
+            ordered_sizings,
+            tuple((*rejections, scaling)),
+            completeness,
+            batch,
+            scaling,
+            (),
+            (),
+            (),
+        )
+    rejected_items = tuple(
+        item for item in scaling.item_results if isinstance(item, RejectedScalingItem)
+    )
+    accepted_by_sizing_id = {
+        item.sizing_result_id: item
+        for item in scaling.item_results
+        if isinstance(item, AcceptedScalingItem)
+    }
+    plan_inputs: list[EntryPlanningInputs] = []
+    plans: list[EntryExecutionPlan] = []
+    for sizing in ordered_sizings:
+        accepted = accepted_by_sizing_id.get(sizing.result_id)
+        if accepted is None:
+            continue
+        item = item_by_sizing_id[sizing.result_id]
+        plan_input = EntryPlanningInputs(
+            candidate=item.candidate,
+            intent=item.intent,
+            target_open=item.target_open,
+            watermark=item.watermark,
+            contract=item.contract,
+            cost=item.cost,
+            funding_schedule=item.funding_schedule,
+            funding_risk=item.funding_risk,
+            account=inputs.account,
+            account_evidence_bundle=inputs.account_evidence_bundle,
+            account_evidence_records=inputs.account_evidence_records,
+            open_risk_evidence_records=inputs.open_risk_evidence_records,
+            stage=inputs.stage,
+            completeness=completeness,
+            batch=batch,
+            sizing=sizing,
+            scaling=scaling,
+            accepted_item=accepted,
+            split_start_utc_ms=inputs.split_start_utc_ms,
+            split_end_utc_ms=inputs.split_end_utc_ms,
+            code_commit=inputs.code_commit,
+            dependency_lock_hash=inputs.dependency_lock_hash,
+        )
+        plan_inputs.append(plan_input)
+        plan = build_entry_execution_plan(plan_input)
+        if isinstance(plan, ExecutionRejection):
+            rejections.append(plan)
+        else:
+            plans.append(plan)
+    return EntryBatchPlanningOutcome(
+        ordered_sizings,
+        tuple(rejections),
+        completeness,
+        batch,
+        scaling,
+        rejected_items,
+        tuple(plan_inputs),
+        tuple(sorted(plans, key=lambda item: (item.symbol, item.plan_id))),
     )
 
 
@@ -141,6 +478,22 @@ def plan_due_entries(
         dependencies.entry_planner(dependencies.entry_inputs_factory(state, intent, evidence))
         for intent in due
     )
+
+
+def plan_due_entry_batch(
+    state: object,
+    intents: tuple[object, ...],
+    minute_open_utc_ms: int,
+    evidence: object,
+    dependencies: PlannerDependencies,
+) -> object | None:
+    due = _due(intents, minute_open_utc_ms)
+    if not due:
+        return None
+    if dependencies.entry_inputs_factory is None or dependencies.entry_planner is None:
+        raise ValueError("entry batch planner dependencies are unavailable")
+    batch_inputs = dependencies.entry_inputs_factory(state, due, evidence)
+    return dependencies.entry_planner(batch_inputs)
 
 
 def plan_due_exits(

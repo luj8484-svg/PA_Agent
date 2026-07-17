@@ -45,6 +45,7 @@ class FundingSettlement:
 class FundingReserveExceeded:
     event_time_utc_ms: int
     position_id: str
+    funding_record_id: str
     actual_adverse_payment: Decimal
     remaining_reserve: Decimal
     reason: str = "FUNDING_RESERVE_EXCEEDED"
@@ -62,6 +63,7 @@ def settle_funding(
         return FundingReserveExceeded(
             event_time_utc_ms=record.funding_time_utc_ms,
             position_id=position.position_id,
+            funding_record_id=record.record_id,
             actual_adverse_payment=abs(wallet_delta),
             remaining_reserve=position.remaining_funding_reserve,
         )

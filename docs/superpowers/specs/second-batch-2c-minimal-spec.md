@@ -24,9 +24,10 @@
 1. 接收 2A `StrategyCandidate`，调用现有 2B `make_entry_intent` 生成 `EntryIntent`。
 2. Intent 等待自己的 `target_execution_time_utc_ms`；未来 Intent 不影响此前状态。
 3. 2C 回放到目标分钟，先完成 funding、open 保护性退出和到期退出。
-4. 2C 从该分钟 trade open 构造 `TargetMinuteOpenSnapshot`，从当前 `EngineState` 构造 `AccountPlanningEvidenceBundle` 及 2B 所需证据链。
-5. 调用现有 2B `build_entry_execution_plan`，保存原样返回的 `EntryExecutionPlan | ExecutionRejection`。
-6. 仅成功 Plan 进入原子 batch gate；成功消费后生成唯一 Fill。Rejection 不得静默降级为“无交易”。
+4. 2C 从该分钟 trade open 构造 BTC/ETH `TargetMinuteOpenSnapshot` 集合，从当前 `EngineState` 一次性构造唯一 `AccountPlanningEvidenceBundle`、`AccountPlanningSnapshot` 与 `PortfolioBatchCompletenessSnapshot`。
+5. `plan_due_entry_batch` 一次接收同一 target minute 的全部 Intent：逐项调用现有 2B `position_sizing`，构造唯一 `PortfolioPlanningBatch`，只调用一次现有 `scale_portfolio`，得到唯一 `PortfolioScalingResult`；不得按 symbol 独立计算最终仓位，也不得在 item 被量化拒绝后重新放大其他 item。
+6. 仅为 `AcceptedScalingItem` 调用现有 `build_entry_execution_plan`；原样保存全部 `PositionSizingResult`、`ExecutionRejection`、`RejectedScalingItem`、Batch、ScalingResult、Plan 及其 Canonical ID/hash。Plan 的 quantity、risk、required cash 必须来自同一证据链。
+7. 批后若 `sum(plan.required_cash)>available_balance`、总计划风险超过当前组合1%上限，或 Plan 引用的 batch/scaling/account evidence 不一致，产生 `ENTRY_BATCH_POST_PLAN_INVARIANT_VIOLATION` 与 `PathInvalidEvent`，整批不生成任何 Entry Fill，路径立即 `INVALID`；这是实现不变量破坏，不得静默降级成“无交易”。正常现金/最小量拒绝只能由2B Sizing/Scaling产生正式 Rejection。
 
 执行延迟（0/1/2 分钟）由 2B execution config 决定，不属于 Candidate，也不得改变 Candidate ID。
 
@@ -122,7 +123,7 @@ M = isolated_margin_balance
 
 entry/exit fee 与 funding 只改变 wallet；margin lock/release 只改变 `locked_initial_margin`；fee/funding 不得再从 isolated margin 扣除。`isolated_margin_balance` 持仓期间不因 fee/funding 自动变化。这是 `ESTIMATED_FIXED_ISOLATED_MARGIN_V1 / ESTIMATED_NOT_EXCHANGE_EXACT` 近似。
 
-Funding reserve 生命周期：Entry 锁定 Plan 全部 reserve；按 `funding_event_count` 计算 planned slice；每个实际 funding 事件释放一个 slice；实际 funding wallet delta 只记一次；Exit 释放剩余 reserve；funding 收入不增加 reserve；reserve 释放不是收入。若实际不利支付绝对值大于 remaining reserve，输出 `FUNDING_RESERVE_EXCEEDED` 并使路径 `EXECUTION_PATH_INVALID/INVALID`。任一事件后 `available_balance < 0`、wallet 无法覆盖 locks、或 `isolated_margin_balance <= 0` 均 INVALID，禁止 `max(0)` 修补。
+Funding reserve 生命周期：Entry 锁定 Plan 全部 reserve；按 `funding_event_count` 计算 planned slice；每个实际 funding 事件释放一个 slice；实际 funding wallet delta 只记一次；Exit 释放剩余 reserve；funding 收入不增加 reserve；reserve 释放不是收入。若 `actual_adverse_payment > remaining_reserve`，必须在提交前生成含 `position_id`、funding timestamp/record ID、actual payment、remaining reserve 的 `FundingReserveExceeded`，再生成 `PathInvalidEvent` 并立即 `INVALID`；不得提交该次 funding wallet Ledger、reserve release Ledger，不得修改 position remaining reserve/events，terminal 必须保留失败证据且该路径不得进入绩效晋级。禁止部分修改账户后再 INVALID。任一事件后 `available_balance < 0`、wallet 无法覆盖 locks、或 `isolated_margin_balance <= 0` 均 INVALID，禁止 `max(0)` 修补。
 
 ## 7. 估算爆仓与触发
 
@@ -135,11 +136,12 @@ LONG 用 mark low、SHORT 用 mark high 检查。open 已越过时 reference=mar
 
 ## 8. 有界双路径歧义
 
-模拟从同一 root 最多维护两个长期 path identity：`BASELINE` 和 `CONSERVATIVE`。第一次歧义初始化两条；以后每条路径按自身 policy 通过 `resolve_ambiguity(path_kind, parent_state, candidates) -> single successor` 产生一个后继，绝不再 fork 成 4/8/... 条。最大 active path 数永远 `<=2`；状态重新相同也保留两个 identity。
+`BASELINE` 和 `CONSERVATIVE` 在 simulation start 即创建，active path 数始终恰为2；不得等到第一次歧义才创建，也不得新增第三条路径。第一次歧义前，除 path identity 外，两条路径的 Event 经济事实、Ledger、Fill、Trade、Equity 必须完全一致；从第一次歧义所在分钟起才允许各自 policy 产生不同后继。状态重新相同仍保留两个 identity。
 
 - BASELINE：选择相对各自 minute open 绝对百分比距离最小的触发；相等时 `LIQUIDATION > STOP > TAKE_PROFIT`。
 - CONSERVATIVE：在 1m OHLC 可支持的候选中选择 minute-end equity 最低的结果；相等用同一优先级。
 - 每个歧义分钟保存候选集、选择理由、parent snapshot hash 和 `PATH_AMBIGUOUS`；不得使用未来 close 之后的数据、后续分钟或后续 funding 选择当前结果。
+- 未来2D必须分别报告两条路径；禁止将两条路径的交易、收益或样本数量相加。
 
 ## 9. Account、HALT、INVALID 与 Equity
 
@@ -171,7 +173,7 @@ HALT 为吸收状态但不是立即终止模拟。PathResult 保存 `halt_trigge
 
 每次完整运行输出：实际 Intent、2B Plan/ExecutionRejection、Fill、Event、Ledger、Position、Trade、Equity、StateSnapshot、PathResult 和 Canonical manifest。`TradeRecord.net_pnl = gross_pnl - entry_fee - exit_fee + funding_wallet_delta_sum`。Event 只保存事实；before/after 由 Ledger reducer 和 StateSnapshot 推导，不允许 Fill 或 TradeRecord 成为独立状态真相源。
 
-## 11. 冻结 Requirements（60）
+## 11. 冻结 Requirements（60，语义修订后数量不变）
 
 | 范畴 | Requirement IDs | 数量 |
 |---|---|---:|

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import csv
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -37,12 +39,12 @@ def test_master_requirement_registry_is_bidirectionally_complete() -> None:
         assert f"def {row['test_name']}(" in test_path.read_text(encoding="utf-8"), row
 
 
-def test_timeline_golden_manifest_has_23_content_addressed_cases() -> None:
+def test_timeline_golden_manifest_has_24_content_addressed_cases() -> None:
     path = FIXTURES / "timeline_golden_v1.json"
     payload = json.loads(path.read_text(encoding="utf-8"), parse_float=lambda _: None)
     cases = payload["cases"]
     assert payload["schema_version"] == "TIMELINE_GOLDEN_V1"
-    assert [item["timeline_id"] for item in cases] == [f"TL-{index:02d}" for index in range(1, 24)]
+    assert [item["timeline_id"] for item in cases] == [f"TL-{index:02d}" for index in range(1, 25)]
     for item in cases:
         content = {key: value for key, value in item.items() if key != "content_hash"}
         assert item["content_hash"] == canonical_sha256(content)
@@ -69,3 +71,18 @@ def test_red_team_registry_has_34_direct_defenses() -> None:
         test_path = ROOT / row["test_file"]
         assert test_path.is_file(), row
         assert f"def {row['test_name']}(" in test_path.read_text(encoding="utf-8"), row
+
+
+def test_property_registry_ids_and_actual_functions_are_counted_separately() -> None:
+    matrix = (ROOT / "docs/superpowers/reviews/second-batch-2c-acceptance-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    registered = {int(value) for value in re.findall(r"P-(\d{2})", matrix)}
+    assert registered == set(range(1, 25))
+    tree = ast.parse((Path(__file__).parent / "test_properties.py").read_text(encoding="utf-8"))
+    functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_property_")
+    }
+    assert len(functions) == 9

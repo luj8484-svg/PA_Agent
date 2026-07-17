@@ -15,6 +15,34 @@ class FakeIntent:
     symbol: str = "BTCUSDT"
 
 
+def test_entry_batch_planner_receives_all_due_intents_once() -> None:
+    from pa_agent.research_backtest.simulation.planning import (
+        PlannerDependencies,
+        plan_due_entry_batch,
+    )
+
+    calls: list[object] = []
+    marker = object()
+
+    def factory(state, due, evidence):
+        calls.append((state, due, evidence))
+        return marker
+
+    deps = PlannerDependencies(factory, lambda value: ("batch-outcome", value), None, None)
+    state = object()
+    evidence = object()
+    due = (
+        FakeIntent("eth", 60_000, "ETHUSDT"),
+        FakeIntent("btc", 60_000, "BTCUSDT"),
+    )
+    assert plan_due_entry_batch(state, due, 60_000, evidence, deps) == (
+        "batch-outcome",
+        marker,
+    )
+    assert len(calls) == 1
+    assert tuple(item.symbol for item in calls[0][1]) == ("BTCUSDT", "ETHUSDT")
+
+
 def test_entry_planner_receives_target_minute_current_state() -> None:
     from pa_agent.research_backtest.simulation.planning import PlannerDependencies, plan_due_entries
 

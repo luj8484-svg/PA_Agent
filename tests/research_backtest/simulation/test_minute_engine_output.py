@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -108,6 +108,36 @@ def test_funding_is_applied_before_open_gate() -> None:
     assert funding_index < open_index
 
 
+def test_funding_reserve_exceeded_is_precommit_atomic_invalid() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.funding import (
+        FundingRecord,
+        FundingReserveExceeded,
+    )
+    from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
+
+    pos = replace(position(), remaining_funding_reserve=Decimal("1"))
+    state = replace(
+        initial_engine_state(config()),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    record = FundingRecord("f-over", "BTCUSDT", 60_000, Decimal("0.01"), Decimal("100"), "a" * 64)
+    value = replace(minute(), funding_records=(record,), funding_expected=True)
+    result = process_minute(state, value, config(), dependencies())
+    assert result.state.path_state.value == "INVALID"
+    assert result.state.wallet_balance == state.wallet_balance
+    assert result.state.locked_funding_reserve == state.locked_funding_reserve
+    assert result.state.positions == state.positions
+    assert result.ledger_entries == ()
+    assert isinstance(result.planning_outputs[0], FundingReserveExceeded)
+    assert result.planning_outputs[0].funding_record_id == "f-over"
+    assert isinstance(result.planning_outputs[-1], PathInvalidEvent)
+
+
 def test_open_gap_liquidation_cancels_due_scheduled_exit() -> None:
     from pa_agent.research_backtest.simulation.domain import initial_engine_state
     from pa_agent.research_backtest.simulation.engine import process_minute
@@ -165,6 +195,76 @@ def test_halt_does_not_end_processing_and_separates_times() -> None:
     assert result.state.halt_trigger_time_utc_ms == 60_000
     assert result.state.final_processed_time_utc_ms == 120_000
     assert len(result.equity_points) == 1
+
+
+def test_halt_position_exits_within_two_processed_minutes() -> None:
+    from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.halt import apply_halt
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    cfg = config(simulation_end_exit_open_utc_ms=180_000)
+    pos = replace(
+        position(), stop_trigger_price=Decimal("80"), take_profit_trigger_price=Decimal("120")
+    )
+    state = replace(
+        apply_halt(initial_engine_state(cfg), 60_000, "TEST_HALT"),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+
+    def exit_factory(actual_position, reasons, event_time, _state):
+        assert reasons == (ScheduledExitReason.HALT_EXIT,)
+        return SimpleNamespace(
+            intent_id="halt-exit-intent",
+            position_id=actual_position.position_id,
+            symbol=actual_position.symbol,
+            scheduled_exit_reason=ScheduledExitReason.HALT_EXIT,
+            target_execution_time_utc_ms=event_time + 1,
+        )
+
+    first = process_minute(
+        state,
+        minute(60_000),
+        cfg,
+        dependencies(
+            exit_intent_factory=exit_factory,
+            maintenance_evidence_factory=lambda *_: replace(
+                maintenance(), effective_end_utc_ms=180_000
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        plan_id="halt-exit-plan",
+        intent_id="halt-exit-intent",
+        origin_candidate_id=pos.origin_candidate_id,
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        position_side=Side.LONG,
+        scheduled_exit_reason=ScheduledExitReason.HALT_EXIT,
+        target_execution_time_utc_ms=120_000,
+        quantity=pos.quantity,
+        expected_exit_fill_price=Decimal("100"),
+        expected_exit_fee=Decimal("0"),
+    )
+    second = process_minute(
+        first.state,
+        minute(120_000),
+        cfg,
+        dependencies(
+            planners=PlannerDependencies(None, None, lambda *_: plan, lambda value: value),
+            exit_intent_factory=exit_factory,
+            maintenance_evidence_factory=lambda *_: replace(
+                maintenance(), effective_end_utc_ms=180_000
+            ),
+        ),
+    )
+    assert second.state.positions == ()
+    assert second.state.flat_after_halt_time_utc_ms == 120_000
+    assert len(second.fills) == 1
 
 
 def test_complete_run_is_deterministic_and_has_at_most_two_paths() -> None:
@@ -231,7 +331,12 @@ def test_complete_run_cannot_finish_valid_with_open_position() -> None:
         config(simulation_start_utc_ms=60_000, simulation_end_exit_open_utc_ms=120_000),
         dependencies(
             entry_intent_factory=lambda _: intent,
-            planners=PlannerDependencies(lambda *_: plan, lambda value: value, None, None),
+            planners=PlannerDependencies(
+                lambda *_: "batch-inputs",
+                lambda _: SimpleNamespace(audit_objects=(plan,), plans=(plan,)),
+                None,
+                None,
+            ),
             maintenance_evidence_factory=lambda *_: replace(
                 maintenance(), effective_end_utc_ms=180_000
             ),
@@ -263,6 +368,92 @@ def test_experiment_end_blocks_entry_planning() -> None:
     )
     result = process_minute(state, minute(120_000), config(), deps)
     assert any(event.kind == "EXPERIMENT_END_ENTRY_CANCELLED" for event in result.events)
+
+
+def test_process_minute_calls_entry_batch_planner_once_for_btc_and_eth() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    due = (
+        SimpleNamespace(intent_id="btc", symbol="BTCUSDT", target_execution_time_utc_ms=60_000),
+        SimpleNamespace(intent_id="eth", symbol="ETHUSDT", target_execution_time_utc_ms=60_000),
+    )
+    cfg = config(simulation_end_exit_open_utc_ms=120_000)
+    state = replace(initial_engine_state(cfg), pending_entry_intents=due)
+    calls: list[tuple[object, ...]] = []
+
+    def batch_factory(_state, intents, _evidence):
+        calls.append(intents)
+        return "batch-inputs"
+
+    outcome = SimpleNamespace(audit_objects=("batch-audit",), plans=())
+    minute_input = minute()
+    minute_input = replace(
+        minute_input,
+        trade_bars=(
+            *minute_input.trade_bars,
+            replace(minute_input.trade_bars[0], symbol="ETHUSDT"),
+        ),
+        mark_bars=(*minute_input.mark_bars, replace(minute_input.mark_bars[0], symbol="ETHUSDT")),
+    )
+    result = process_minute(
+        state,
+        minute_input,
+        cfg,
+        dependencies(planners=PlannerDependencies(batch_factory, lambda _: outcome, None, None)),
+    )
+    assert len(calls) == 1
+    assert tuple(item.symbol for item in calls[0]) == ("BTCUSDT", "ETHUSDT")
+    assert "batch-audit" in result.planning_outputs
+
+
+def test_post_plan_invariant_violation_invalidates_whole_entry_batch() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.planning import (
+        PlannerDependencies,
+        build_entry_batch_planning_outcome,
+    )
+    from tests.research_backtest.execution.fixtures.entry_plan_case import TARGET_TIME
+    from tests.research_backtest.simulation.test_entry_batch_adapter import _batch_inputs
+
+    batch_inputs = _batch_inputs()
+    outcome = build_entry_batch_planning_outcome(batch_inputs)
+    original = outcome.plans[0]
+    corrupted = SimpleNamespace(
+        **{field.name: getattr(original, field.name) for field in fields(original)}
+    )
+    corrupted.required_cash = Decimal("10001")
+    invalid_outcome = replace(outcome, plans=(corrupted,))
+    due = tuple(item.intent for item in batch_inputs.items)
+    cfg = config(simulation_end_exit_open_utc_ms=TARGET_TIME + 60_000)
+    state = replace(initial_engine_state(cfg), pending_entry_intents=due)
+    minute_input = minute(TARGET_TIME)
+    minute_input = replace(
+        minute_input,
+        trade_bars=(
+            *minute_input.trade_bars,
+            replace(minute_input.trade_bars[0], symbol="ETHUSDT"),
+        ),
+        mark_bars=(
+            *minute_input.mark_bars,
+            replace(minute_input.mark_bars[0], symbol="ETHUSDT"),
+        ),
+    )
+    result = process_minute(
+        state,
+        minute_input,
+        cfg,
+        dependencies(
+            planners=PlannerDependencies(
+                lambda *_: batch_inputs, lambda _: invalid_outcome, None, None
+            )
+        ),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert result.fills == ()
+    assert result.planning_outputs[-1].reason == ("ENTRY_BATCH_POST_PLAN_INVARIANT_VIOLATION")
 
 
 def test_time_exit_intent_is_created_at_aligned_maximum_open() -> None:
