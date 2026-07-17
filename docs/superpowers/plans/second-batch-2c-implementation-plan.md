@@ -1,136 +1,151 @@
 # Second-Batch 2C Minimal Event Engine Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+状态：`APPROVED_FOR_TDD_IMPLEMENTATION`
 
-**Goal:** Build the smallest deterministic one-minute BTC/ETH historical execution loop that consumes 2A Candidates and 2B Plans and produces immutable fills, isolated positions, ledger entries, trades, equity points, and VALID/INVALID/HALTED path results.
+**Goal:** Build a deterministic UTC one-minute BTC/ETH historical simulation that creates 2B Plans from target-minute state, consumes successful Plans, and emits immutable execution/account/path facts.
 
-**Architecture:** A single-threaded pure reducer processes closed one-minute slices under `MINUTE_EVENT_ORDER_V1`. Domain facts are immutable and Canonical; economic state is derived only by reducing Events into Ledger-backed snapshots. Ambiguous intraminute order forks baseline and conservative paths from one parent hash.
+**Architecture:** A single-threaded pure reducer executes `MINUTE_EVENT_ORDER_V2`. Complete runs consume Candidates and evidence, not future-state Plan files. At each target minute the engine constructs 2B evidence and invokes the existing pure planners. Economic state changes only through Ledger reduction. Ambiguity is bounded to persistent BASELINE and CONSERVATIVE identities.
 
-**Tech Stack:** Python 3.12, frozen slotted dataclasses, Decimal, pytest, Hypothesis, existing 2B Canonical/identity utilities.
+**Tech Stack:** Python 3.11, frozen slotted dataclasses, Decimal, pytest, Hypothesis, existing 2A/2B Canonical and planning utilities.
 
-## Global Constraints
+## Global constraints
 
-- Scope is exactly the 48 Requirements, 16 Timeline Fixtures, and 24 red-team scenarios in the frozen 2C package.
-- No GUI, LLM, API Key, authentication, HTTP, create_order, paper/live automation, full performance analytics, walk-forward, OOS, or parameter grids.
-- 2C consumes but never mutates/recomputes Candidate, EntryExecutionPlan, ExitExecutionPlan, quantity, or 2B risk formulas.
-- Only closed UTC 1m data; trade drives fills/stop/TP, mark drives estimated liquidation/equity, real historical funding drives settlement.
-- All economic values use Decimal; outputs are Canonical and byte-stable.
-- Every task starts RED, adds an independent reference/fixture before production formulas, ends GREEN, then commits.
+- Scope is exactly 60 Requirements, 23 Timeline Golden fixtures, and 34 red-team scenarios in the frozen package.
+- No GUI, LLM, API Key, authentication, HTTP/socket client, `create_order`, paper/live automation, 2D performance analytics, walk-forward, OOS, or parameter grid.
+- 2C calls but never copies or alters 2B planning formulas. Candidate/Intent/Plan Canonical bytes are immutable.
+- Complete run input contains Candidates/evidence/SimulationConfig; direct Plan injection exists only in isolated fixtures marked `LOCAL_PLAN_FIXTURE_ONLY`.
+- Only closed UTC 1m data; trade drives fills/stop/TP, mark drives estimated liquidation/equity, historical funding drives settlement.
+- All economic values use Decimal. Every task starts with an independent reference or Golden, then RED test, then minimal production code, then GREEN verification.
+- No task may create a Fill before the Ledger reducer required to apply it exists.
 
 ## Planned file map
 
-- `pa_agent/research_backtest/simulation/domain.py`: Event, Fill, Position, Ledger, Trade, Equity, Path schemas.
-- `pa_agent/research_backtest/simulation/versions.py`: 2C schema/order/model versions only.
-- `pa_agent/research_backtest/simulation/inputs.py`: closed-minute and evidence validation.
-- `pa_agent/research_backtest/simulation/fills.py`: Plan consumption, gap and protective fill formulas.
-- `pa_agent/research_backtest/simulation/funding.py`: real funding settlement.
-- `pa_agent/research_backtest/simulation/liquidation.py`: versioned estimated liquidation.
-- `pa_agent/research_backtest/simulation/ledger.py`: only account mutation reducer.
-- `pa_agent/research_backtest/simulation/ambiguity.py`: baseline/conservative fork selection.
-- `pa_agent/research_backtest/simulation/engine.py`: `MINUTE_EVENT_ORDER_V1` orchestration.
-- `pa_agent/research_backtest/simulation/output.py`: Canonical JSONL and final hashes.
-- `tests/research_backtest/simulation/`: unit/property tests and all Golden timelines.
+- `simulation/domain.py`: SimulationConfig, Events, Fill, Position, Ledger, Account, Equity, Trade, Path.
+- `simulation/versions.py`: closed 2C schema/order/model versions.
+- `simulation/identity.py`: config/run/output Canonical identity.
+- `simulation/inputs.py`: closed-minute slices, Candidate scheduling, contextual gaps.
+- `simulation/planning.py`: adapters that construct current evidence and call existing 2B planners.
+- `simulation/ledger.py`: only economic-state reducer, locks/reserves/invariants.
+- `simulation/funding.py`: historical funding and reserve slices.
+- `simulation/liquidation.py`: maintenance evidence and estimated liquidation reference.
+- `simulation/positions.py`: immutable isolated-position lifecycle.
+- `simulation/fills.py`: Entry/Scheduled/protective fill facts.
+- `simulation/triggers.py`: open-gap and intraminute trigger discovery.
+- `simulation/ambiguity.py`: bounded policy selection.
+- `simulation/halt.py`: open/intraminute HALT exposure policy.
+- `simulation/engine.py`: `MINUTE_EVENT_ORDER_V2` orchestration.
+- `simulation/output.py`: Canonical JSONL projections and manifest.
+- `simulation/scope_guard.py`: forbidden capability scan.
+- `tests/research_backtest/simulation/`: unit/property/Timeline/registry tests.
 
-### Task 1: Closed schemas, versions, Canonical identity, and scope guard
+## Task 1 — Domain, versions, SimulationConfig, Canonical, scope guard
 
-**Interfaces**
-- Produces immutable `SimulationConfig`, `MinuteInputSlice`, `SimulationEvent`, `FillEvent`, `IsolatedPosition`, `LedgerEntry`, `AccountState`, `EquityPoint`, `TradeRecord`, `PathResult`.
-- Reuses 2B `canonical_dumps`, `canonical_sha256`, `formal_identity` without altering them.
+Interfaces:
 
-- [ ] Write failing closed-schema, float-rejection, identity-tamper, wall-clock and forbidden-import tests for `2C-ID-*` and `2C-SCOPE-*`.
-- [ ] Run `pytest tests/research_backtest/simulation/test_domain_identity_scope.py -v`; expect missing simulation package.
-- [ ] Implement only domain/version objects and AST/import-closure guard extensions.
-- [ ] Re-run focused tests and existing `tests/research_cli`, `tests/research_data`, `tests/research_backtest/execution`.
-- [ ] Commit `feat(research-2c): add simulation domain and scope boundary`.
+- Immutable closed schemas for `SimulationConfig`, input/evidence refs, Event, Fill, Position, Ledger, AccountState, EquityPoint, TradeRecord, StateSnapshot, PathResult.
+- `make_simulation_config(...)`, `initial_engine_state(config)`, `simulation_run_id(inputs, config)`.
 
-### Task 2: Input visibility and fail-closed data gate
+- [ ] Write independent Canonical examples and RED tests for closed schemas, float rejection, UTC 1m alignment, initial balances/locks, identity tamper, wall-clock independence and forbidden imports.
+- [ ] Implement versions and domain objects using existing 2B Canonical utilities.
+- [ ] Prove acquisition metadata and pre-generated Plan files cannot enter run identity.
+- [ ] Run focused tests and existing 2A/2B tests; commit.
 
-**Interfaces**
-- Consumes Canonical trade/mark/funding rows and due Plans.
-- Produces `ValidatedMinuteInputs | PathInvalidEvent` with machine-readable gap provenance.
+## Task 2 — Input slice, Candidate/Intent scheduling, fail-closed gate
 
-- [ ] Create TL-10 through TL-13 fixtures and independent expected gap classifier.
-- [ ] Write RED tests for closed bars, UTC alignment, future Plan rejection, trade/mark/funding contextual gaps and index audit-only behavior.
-- [ ] Implement `validate_minute_inputs(state, slice)` with no filesystem/network access.
-- [ ] Verify invalid paths emit no later Event/Ledger/Equity entries.
-- [ ] Commit `feat(research-2c): add contextual minute data gate`.
+Interfaces:
 
-### Task 3: Entry/scheduled-exit fills and isolated positions
+- `build_minute_slice(...) -> MinuteInputSlice`
+- `schedule_candidate(candidate, execution_config) -> EntryIntent`
+- `validate_minute_inputs(state, slice) -> ValidatedMinuteInputs | PathInvalidEvent`
 
-**Interfaces**
-- `consume_entry_batch(state, plans, trade_open, cost) -> tuple[Event, ...]`
-- `consume_scheduled_exits(state, exit_plans, trade_open) -> tuple[Event, ...]`
-- `apply_fill(state, FillEvent) -> EngineState` delegates all economics to Task 5 ledger reducer.
+- [ ] Create TL-10..13 and independent contextual-gap classifier before production code.
+- [ ] RED-test closed bars, UTC alignment, future visibility, trade/mark/funding contextual gaps, index audit-only, terminal INVALID without fake Equity.
+- [ ] Implement immutable scheduling and gate with no filesystem/network access.
+- [ ] Verify Candidate bytes/ID unchanged by future data and execution delay.
 
-- [ ] Create TL-01, TL-02 and TL-08 Plan-bound Golden inputs before production code.
-- [ ] Write RED tests for expected fill equality, once-only Plan consumption, batch atomic cash gate, one-way positions and stable BTC/ETH order.
-- [ ] Implement Entry/ExitPlan validation and Fill facts; do not implement protective triggers yet.
-- [ ] Verify 2B Plan bytes and IDs remain unchanged.
-- [ ] Commit `feat(research-2c): consume plans into isolated position fills`.
+## Task 3 — Ledger, AccountState, locks, reserve and invariants
 
-### Task 4: Fees, real funding, and reserve lifecycle
+Interfaces:
 
-**Interfaces**
-- `settle_funding(position, funding_record, mark_price) -> FundingEvent`
-- Fee and funding Events carry Decimal wallet delta; reserves carry separate lock delta.
+- `reduce_ledger(previous, entries) -> AccountState`
+- `validate_account_state(state) -> None | PathInvalidEvent`
 
-- [ ] Create TL-05 and TL-14 plus an independent Decimal sign/reference implementation.
-- [ ] Write RED tests for four funding sign quadrants, `(pre-minute position, same-time exit, new entry)` boundary, fee once-only and reserve release.
-- [ ] Implement fee/funding facts with timestamp idempotency.
-- [ ] Property-test that replay/permutation cannot double charge an obligation.
-- [ ] Commit `feat(research-2c): settle fees and historical funding once`.
+- [ ] Build an independent Decimal double-entry/conservation reference.
+- [ ] RED-test every Ledger kind, wallet/equity/available identities, fixed isolated margin, lock/release, replay idempotency and negative-state fail closed.
+- [ ] Implement the sole account mutator before any production Fill is created.
+- [ ] Property-test arbitrary valid event sequences and forbidden double deductions.
 
-### Task 5: Ledger reducer, account conservation, risk and HALT
+## Task 4 — Funding and maintenance/liquidation references
 
-**Interfaces**
-- `reduce_ledger(previous: AccountState, entries: tuple[LedgerEntry,...]) -> AccountState`
-- `mark_equity(state, mark_price) -> EquityPoint`
-- Only this task may change wallet/locks/equity fields.
+Interfaces:
 
-- [ ] Write an independent accounting reference and TL-09/TL-15 expected ledger before implementation.
-- [ ] RED-test every ledger kind, wallet/equity/available formulas, margin release, double-use prevention, 0.5%/1% Plan revalidation and 10% open/intraminute/close HALT.
-- [ ] Implement reducer invariants after every Event; make HALT absorbing and disallow Entry.
-- [ ] Property-test conservation across arbitrary valid event sequences.
-- [ ] Commit `feat(research-2c): add conserving account ledger and halt gate`.
+- `settle_funding(position, record, reserve_state) -> FundingEvent | PathInvalidEvent`
+- `estimated_liquidation(position, maintenance) -> LiquidationReference | PathInvalidEvent`
 
-### Task 6: stop, TP, gap, and estimated liquidation
+- [ ] Create independent Decimal sign, reserve-slice and LONG/SHORT liquidation references plus TL-14/TL-23.
+- [ ] RED-test funding boundary/idempotency, income, remaining release, reserve exceeded, maintenance validity and mandatory watermarks.
+- [ ] Implement `ESTIMATED_FIXED_ISOLATED_MARGIN_V1`; fee/funding never alter isolated margin.
 
-**Interfaces**
-- `discover_trade_triggers(position, trade_bar) -> TriggerCandidates`
-- `discover_liquidation(position, mark_bar, maintenance) -> TriggerCandidate | PathInvalidEvent`
-- `protective_fill(candidate, trade_open, cost, contract) -> FillEvent`
+## Task 5 — Integrate 2B Entry/Exit planning and Scheduled Exit lifecycle
 
-- [ ] Create TL-03, TL-04, TL-06, TL-07 and independent Decimal formula references.
-- [ ] RED-test source separation, gap reference, one-time slippage/tick quantization, LONG/SHORT liquidation formulas and mmr validity/watermark.
-- [ ] Implement trigger discovery without choosing among ambiguous candidates.
-- [ ] Verify missing/expired maintenance evidence invalidates held paths.
-- [ ] Commit `feat(research-2c): add protective and estimated liquidation triggers`.
+Interfaces:
 
-### Task 7: ambiguity fork and minute engine
+- `plan_due_entries(state, intents, minute_evidence) -> tuple[EntryExecutionPlan|ExecutionRejection,...]`
+- `discover_exit_conditions(state, closed_4h, config) -> tuple[ExitConditionSnapshot,...]`
+- `plan_due_exits(state, intents, minute_evidence) -> tuple[ExitExecutionPlan|ExecutionRejection,...]`
 
-**Interfaces**
-- `fork_ambiguous(parent, candidates) -> tuple[BaselinePath, ConservativePath]`
-- `process_minute(state, slice) -> tuple[EngineState,...]` is the only orchestration entrypoint.
+- [ ] Build spy/reference adapters proving target-minute state is passed to existing 2B functions.
+- [ ] RED-test RT-25: complete run rejects prefabricated Plan streams and Plans vary with funding/exits before planning.
+- [ ] RED-test TIME/TREND/HALT/EXPERIMENT_END source rules, target timing, missing trend evidence, reason priority and cancellation.
+- [ ] Implement adapters only; do not copy sizing, risk, fee, slippage or contract formulas.
+- [ ] Preserve every Plan/Rejection in outputs; critical exit-planning failure cannot silently become no trade.
 
-- [ ] Freeze full expected Event sequences for TL-01 through TL-15.
-- [ ] RED-test all 14 `MINUTE_EVENT_ORDER_V1` stages, baseline distance rule, conservative minimum-equity rule, shared parent hash and one exit per position/minute.
-- [ ] Implement pure single-threaded orchestration and canonical path sorting.
-- [ ] Run all 24 red-team tests; no noncritical naming issue may become a blocker.
-- [ ] Commit `feat(research-2c): orchestrate deterministic minute paths`.
+## Task 6 — Entry/Scheduled Fill and Position lifecycle
 
-### Task 8: outputs, replay determinism, registry and final acceptance
+Interfaces:
 
-**Interfaces**
-- `run_simulation(inputs, config) -> SimulationResult`
-- `write_canonical_result(result, directory) -> OutputManifest` writes atomic JSONL through an explicit CLI layer; core reducer remains I/O-free.
+- `make_entry_fill(plan) -> FillEvent`
+- `make_scheduled_exit_fill(plan, matched_reasons) -> FillEvent`
+- `apply_position_event(position, event) -> IsolatedPosition | ClosedPosition`
 
-- [ ] Create TL-16 byte-for-byte replay fixture and a 48-Requirement bidirectional registry.
-- [ ] RED-test TradeRecord required fields, per-minute EquityPoint, path terminal state, atomic output, stable hashes and acquisition-manifest independence.
-- [ ] Implement output projection and deterministic manifest; do not add performance metrics.
-- [ ] Run `pytest tests/research_backtest/simulation -v`, the entire research suites, registry validator, scoped Ruff/format, diff check and compileall.
-- [ ] Run a final forbidden-capability scan proving no GUI/LLM/API Key/network/order surface.
-- [ ] Commit `feat(research-2c): complete minimal deterministic replay output` and stop for source review.
+- [ ] Create TL-01, TL-02, TL-05, TL-08, TL-20..22 using actual 2B planner outputs.
+- [ ] RED-test expected fill equality, once-only consumption, batch atomicity, one-way position, stable symbol order and experiment-end open.
+- [ ] Implement facts and immediately reduce required Ledger entries; no unclosed Fill state.
 
-## Implementation stop gate
+## Task 7 — stop/TP/open-gap/liquidation and bounded two-path policy
 
-This plan is not authorization to code. Do not create `pa_agent/research_backtest/simulation` or its tests until the four-document package receives explicit human approval. Any semantic change to event order, funding boundary, gap fill, ambiguity selection, ledger formulas, HALT or INVALID behavior requires a version bump and renewed review.
+Interfaces:
+
+- `discover_open_gap_candidates(...)`, `discover_intraminute_candidates(...)`
+- `resolve_ambiguity(path_kind, parent_state, candidates) -> EngineState`
+
+- [ ] Create TL-03,04,06,07,17..19 and independent formula references before production code.
+- [ ] RED-test source separation, `LIQ>STOP>TP>Scheduled` open priority, one-time slippage/tick quantization and one exit per position/minute.
+- [ ] RED-test 20 consecutive ambiguities: every minute active paths `<=2` and each path has one successor.
+- [ ] Implement policy selection without recursive fork; retain two identities even after state convergence.
+
+## Task 8 — Minute engine, HALT, outputs, Timeline and final verification
+
+Interfaces:
+
+- `process_minute(paths, slice, dependencies) -> tuple[EngineState,...]`
+- `run_simulation(inputs, config, dependencies) -> SimulationResult`
+- `write_canonical_result(result, directory) -> OutputManifest` (explicit offline output layer only).
+
+- [ ] Freeze all 23 expected Event sequences and a 60-Requirement bidirectional registry.
+- [ ] RED-test all 14 order stages, open-exit exposure removal, intraminute conservative exposure, HALT drain, halt/final timestamps, terminal INVALID, byte replay and output identity.
+- [ ] Implement pure orchestration and deterministic output; do not add performance metrics.
+- [ ] Run all 34 red-team tests and report explicit business/property/timeline/trace counts separately.
+- [ ] Run research_cli/data/backtest suites, default full suite baseline comparison, registry validator, Ruff/format, diff check and compileall.
+- [ ] Run forbidden-capability scan proving no GUI/LLM/API Key/network/order/2D surface.
+- [ ] Create Draft PR and stop for source review; do not start 2D.
+
+## Task dependency closure
+
+`Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6 → Task 7 → Task 8`.
+
+Task 5 depends on the account/funding/liquidation evidence implemented in Tasks 3–4. Task 6 cannot create Fill until Task 3 Ledger is available. Task 8 is the only full-run integration point. There is no forward dependency and no intermediate state in which economic Fill exists without a reducer.
+
+## Authorization and semantic change gate
+
+This plan is authorized for TDD implementation after the four-document cross-audit passes. Any change to Plan-generation timing, Scheduled Exit source rules, `MINUTE_EVENT_ORDER_V2`, funding boundary, gap priority/fill, bounded-path policy, fixed isolated margin, reserve-exceeded behavior, HALT/INVALID semantics or SimulationConfig identity requires a version bump and human review. Completion means Draft PR only; no merge and no 2D.

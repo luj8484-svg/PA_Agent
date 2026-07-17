@@ -1,145 +1,192 @@
 # 第二批 2C 最小事件引擎冻结规范
 
-状态：`DRAFT_FOR_ONE_TIME_HUMAN_REVIEW`
+状态：`FROZEN_FOR_TDD_IMPLEMENTATION`
 
 父基线：`b07cd9e7dd56cfb628400ef0878c6610d4d6b894`
-目标：以最小、确定性的逐分钟事件闭环，把 2A `StrategyCandidate` 与 2B `EntryExecutionPlan` / `ExitExecutionPlan` 转化为可审计的历史模拟成交、逐仓仓位、账户状态、逐笔交易和权益序列。
 
-## 1. 权威边界
+目标：以确定性的 UTC 1 分钟事件闭环，把 2A `StrategyCandidate` 在目标分钟调用 2B 纯规划器生成的 Plan，转化为可审计的历史模拟成交、逐仓仓位、账本、交易、权益和路径结果。
 
-- Python 确定性规则仍是唯一交易与撮合决策源；无 GUI、LLM、API Key、鉴权、HTTP 交易客户端或下单能力。
-- 市场仅限 Binance USDⓈ-M `BTCUSDT`、`ETHUSDT` 永续，逐仓、单向持仓、固定 1 倍杠杆。
-- 输入只接受已规范化、UTC、已收盘的 1m trade/mark 数据、真实历史资金费率、2A Candidate、2B Plan、版本化成本/合约/维持保证金证据。
-- 2C 不重新生成 Candidate，不重新计算 2B quantity/risk，不修改 Plan；只验证、消费、撮合、记账。
-- 爆仓永远称为“估算爆仓”；必须记录 maintenance-margin 模型版本、来源、有效期和 `VERIFIED|APPROXIMATED` 模式，不声称精确复刻 Binance。
-- 不包含 Sharpe、Profit Factor、walk-forward、OOS 晋级、参数网格、仪表盘、通知、paper/live 自动化。
+## 1. 权威边界与版本
 
-## 2. 架构与不可变输出
+- Python 确定性规则是唯一交易决策源；无 GUI、LLM、API Key、鉴权、HTTP、交易所写接口、`create_order` 或真实下单能力。
+- 市场仅限 Binance USDⓈ-M `BTCUSDT`、`ETHUSDT` 永续；逐仓、单向持仓、固定 1 倍杠杆。
+- 2C 可调用已冻结的 2A/2B 纯函数，但不得复制 2B 公式、重算 quantity/risk、修改 Candidate/Intent/Plan，或自行改变 stop、TP、风险预算。
+- 爆仓始终是版本化估算，不声称精确复刻 Binance。
+- 不包含 GUI/LLM、paper/live 自动化、绩效晋级、年化、Sharpe、walk-forward、OOS、参数网格或 2D。
+- 冻结版本：`SIMULATION_CONFIG_V1`、`MINUTE_EVENT_ORDER_V2`、`INTRAMINUTE_HALT_POLICY_V1`、`ESTIMATED_FIXED_ISOLATED_MARGIN_V1`、`CANONICAL_2C_V1`。
 
-单线程 `MinuteEventEngine` 按 `(minute_open_utc_ms, path_kind)` 顺序运行纯 reducer：
+## 2. 集成生命周期：禁止未来状态预生成 Plan
 
-1. `InputSlice`：该分钟可用的 trade/mark/funding/plan/contract/cost 数据及内容哈希。
-2. `EngineState`：账户、BTC/ETH 逐仓仓位、待执行 Plan、峰值权益、路径状态。
-3. `Event`：机器可读的事实，不携带可变 before/after 状态。
-4. `LedgerEntry`：双边平衡的不可变经济变动。
-5. `StateSnapshot`：由 reducer 根据前状态和 Event 生成；Event 不保存独立状态真相。
-6. `TradeRecord`、`EquityPoint`、`PathResult`：Canonical JSON Lines，最终按稳定键排序并计算内容哈希。
+完整 `run_simulation` 不接受“预先知道未来账户状态后生成的最终 Plan 集合”作为权威输入。Golden 单元测试可直接注入 Plan，但必须显式标记 `LOCAL_PLAN_FIXTURE_ONLY`，不得进入完整 run identity。
 
-路径状态闭集：`VALID | INVALID | HALTED`。`HALTED` 允许既有仓位退出但永久禁止新 Entry；`INVALID` 立即终止该路径，不再推演保护性成交或补造数据。
+### 2.1 Entry 生命周期
 
-## 3. 数值、身份与守恒
+1. 接收 2A `StrategyCandidate`，调用现有 2B `make_entry_intent` 生成 `EntryIntent`。
+2. Intent 等待自己的 `target_execution_time_utc_ms`；未来 Intent 不影响此前状态。
+3. 2C 回放到目标分钟，先完成 funding、open 保护性退出和到期退出。
+4. 2C 从该分钟 trade open 构造 `TargetMinuteOpenSnapshot`，从当前 `EngineState` 构造 `AccountPlanningEvidenceBundle` 及 2B 所需证据链。
+5. 调用现有 2B `build_entry_execution_plan`，保存原样返回的 `EntryExecutionPlan | ExecutionRejection`。
+6. 仅成功 Plan 进入原子 batch gate；成功消费后生成唯一 Fill。Rejection 不得静默降级为“无交易”。
 
-- 价格、数量、手续费、资金费、保证金、余额、PnL 全用 `Decimal`；不得从 binary float 构造。
-- trade/mark 指标或审计计算可用 `float64`，但进入任何经济边界前必须转回 Decimal 并按对应 tick/step 量化。
-- Canonical 规则沿用 2B：UTF-8、键排序、无空白、枚举取值、UTC 毫秒整数、Decimal 规范字符串、数组顺序有语义。
-- `simulation_run_id` 只依赖数据内容、样本区间、Candidate/Plan、成本/合约/资金费/爆仓模型版本、代码与依赖版本；采集时间和 acquisition manifest 不得进入。
-- 相同 Canonical 输入必须逐字节产生相同 Event、Ledger、Trade、Equity 和最终 hash。
-- 每个 reducer 后强制守恒：`equity = wallet_balance + unrealized_pnl`；`available_balance = wallet_balance - locked_initial_margin - locked_fee_reserve - locked_funding_reserve - pending_plan_reserve`。
-- 同一 `plan_id` 只能消费一次；同一 funding timestamp、fee obligation、position close 只能入账一次。
+执行延迟（0/1/2 分钟）由 2B execution config 决定，不属于 Candidate，也不得改变 Candidate ID。
 
-## 4. 输入契约与可见性
+### 2.2 Scheduled Exit 生命周期
 
-每个市场分钟 `M=[M.open, M.open+60s)` 在引擎处理时必须已经闭合。策略可见性仍截止于 Plan/Candidate 的既有 decision watermark；2C 读取完整分钟 OHLC 仅用于历史成交与风险事件，不反向改变 Plan。
+2C 按冻结条件创建 `ExitConditionSnapshot`，调用 2B `make_exit_intent`；到 Intent 的目标分钟 open 时构造 `TargetMinuteOpenSnapshot` 和当前 `PositionSnapshot`，再调用 `build_exit_execution_plan`。仅成功的 `ExitExecutionPlan` 可生成 Scheduled Exit Fill。失败必须保存 `ExecutionRejection`；影响既有仓位安全退出且不可恢复的缺失/拒绝使路径 `INVALID`。
 
-强制输入：
+四类条件：
 
-- trade 1m：open/high/low/close、open/close time、`is_closed=true`、内容 hash；用于 Entry、计划退出、stop、TP 和成交价格。
-- mark 1m：open/high/low/close、`is_closed=true`、内容 hash；用于估算爆仓、未实现 PnL、equity/HALT。
-- funding：symbol、nominal timestamp、真实 rate、结算 mark price 或可证明的 mark-open 绑定、内容 hash。
-- Plan 证据：完整 2B Canonical 对象及所绑定成本、合约、账户和 batch hashes。
-- maintenance margin：symbol、tier/notional range、mmr、effective interval、source hash、mode、model version。
-- index 仍只作审计；缺失只告警，不改变路径状态。
+- `TIME_EXIT`：来源唯一为 origin EntryPlan 的 `maximum_exit_time_utc_ms`；到达该事件时间创建 Intent。
+- `TREND_EXIT`：只在已收盘 4H 决策边界评估；LONG 在 `trend_state != BULL`、SHORT 在 `trend_state != BEAR` 时触发。`NO_SETUP` 本身不是退出条件；应有而缺失的趋势证据使受影响路径 `INVALID`。
+- `HALT_EXIT`：HALT 触发后为所有未平仓仓位创建，目标为下一可用 1m open；`HALTED` 不得阻止该 Intent/Plan。若仓位先被保护性退出，Intent/Plan 取消。
+- `EXPERIMENT_END`：到 `simulation_end_exit_open_utc_ms` 以该分钟 open 退出全部剩余仓位；数据必须覆盖此 open，实验结束后禁止新 Entry，禁止使用“最后已知 close”临时成交。
 
-缺口语义：空仓且无到期 Plan/事件时，trade 或 mark 缺口只记录；影响 Entry/Exit/持仓估值的 trade 缺口、持仓期间 mark 缺口、持仓跨越的 funding 结算缺失均从该分钟 `DATA_VALIDATION` 事件起将路径置为 `INVALID` 并终止。
+同一 open 多个 Scheduled 原因的选择优先级为 `HALT_EXIT > TREND_EXIT > TIME_EXIT > EXPERIMENT_END`。相同成交只产生一个 Fill，输出保存全部命中原因、最终选择原因和取消原因。
+
+## 3. SimulationConfig、初始状态与身份
+
+`SimulationConfig` 至少包含：
+
+```text
+schema_version=SIMULATION_CONFIG_V1
+symbols=(BTCUSDT, ETHUSDT)
+simulation_start_utc_ms
+simulation_end_exit_open_utc_ms
+initial_wallet_balance
+leverage=1
+position_mode=ONE_WAY
+margin_mode=ISOLATED
+active_path_kinds=(BASELINE, CONSERVATIVE)
+minute_event_order_version=MINUTE_EVENT_ORDER_V2
+intraminute_halt_policy_version=INTRAMINUTE_HALT_POLICY_V1
+liquidation_model_version=ESTIMATED_FIXED_ISOLATED_MARGIN_V1
+cost_model_version
+funding_model_version
+two_a_version
+two_b_planner_version
+two_b_planner_config_hash
+code_commit
+dependency_lock_hash
+config_content_hash
+config_id
+```
+
+开始/结束时间必须对齐 UTC 1m open，且结束不早于开始，否则 fail closed。初始状态固定：`wallet_balance=equity=peak_equity=initial_wallet_balance`，全部 locks 为 0，无仓位、无已消费 Intent/Plan/funding/close ID，`path_state=VALID`。
+
+`simulation_run_id` 只依赖 SimulationConfig 内容、规范 trade/mark/funding 内容 hash、Candidate stream/manifest hash、2A 版本、2B planner 版本/config hash、contract/cost/funding-risk/maintenance 证据 hash、代码与依赖版本。采集时间和 acquisition manifest 不得进入。完整 run 不以预生成 Plan 集合为输入身份；运行中实际生成的 Intent/Plan/Rejection 是输出身份的一部分。
+
+## 4. 输入、可见性与缺口
+
+- 仅使用已收盘、UTC 对齐的 1m trade/mark；trade 驱动 open/fill/stop/TP，mark 驱动估算爆仓、未实现 PnL、equity/HALT。
+- funding 使用真实 timestamp/rate/结算 mark 证据；index 仅审计告警。
+- Candidate stream 只允许在其 decision watermark 后可见；2C 读取完整分钟 OHLC 仅用于历史执行/风险，不得反向修改 Candidate/Plan。
+- trade 缺口影响行情、入场、退出或持仓时 `INVALID`；持仓期间 mark 缺口 `INVALID`；有仓位跨越但缺 funding 结算 `INVALID`；空仓且无相关事件的 trade/mark 缺口只记录；index 缺口不改变路径。
+- INVALID 分钟写 `PathInvalidEvent`、terminal `StateSnapshot` 和 `PathResult`，此后不得生成 Ledger/Trade/Equity。关键 mark 缺失时不得伪造该分钟 `EquityPoint`。
 
 ## 5. 唯一逐分钟事件顺序
 
-每一分钟严格执行以下顺序，版本名 `MINUTE_EVENT_ORDER_V1`：
+版本 `MINUTE_EVENT_ORDER_V2`：
 
-1. `LOAD_CLOSED_INPUTS`：加载已闭合 trade/mark bar、该时点 funding、到期 Plan；校验 UTC、hash、连续性。
-2. `FAIL_CLOSED_DATA_GATE`：按当前仓位和到期事件解释缺口；若关键缺失，写 `PATH_INVALID` 并终止。
-3. `OPENING_POSITION_RECONCILIATION`：验证上分钟状态、Plan reservation、合约/成本/maintenance 版本有效期和一次消费集合。
-4. `FUNDING_SETTLEMENT`：对进入该分钟前仍持有且结算时点命中的仓位结算真实资金费；同刻退出仍须结算，新 Entry 不结算。
-5. `SCHEDULED_OPEN_EXITS`：按 `HALT_EXIT, TREND_EXIT, TIME_EXIT, EXPERIMENT_END` 优先级消费 ExitPlan，在 trade open 以 Plan 的 `expected_exit_fill_price` 成交。
-6. `OPEN_EQUITY_AND_HALT_GATE`：用 mark open 重算权益；若相对历史峰值回撤 `>=10%`，先置 `HALTED`，本分钟禁止新 Entry。
-7. `ENTRY_BATCH_GATE`：只接受处理时间前已存在、目标时间等于本分钟、未消费且未取消的完整 2B batch；先整体验证资金/风险/单向仓位，再按 `(symbol, plan_id)` 排序。
-8. `ENTRY_FILLS`：以 `EntryExecutionPlan.expected_entry_fill_price` 作为实际模拟价，不再次加滑点；同时扣入场费、建立逐仓仓位并将 pending reserve 转为 margin/fee/funding locks。
-9. `INTRAMINUTE_TRIGGER_DISCOVERY`：trade bar 检测 stop/TP，mark bar 检测估算爆仓；开盘已越过触发价视为 gap-at-open。
-10. `AMBIGUITY_FORK`：若无法从 1m 数据确定多个触发的先后，为当前状态生成 `BASELINE` 与 `CONSERVATIVE` 子路径，均记录 `PATH_AMBIGUOUS`。
-11. `PROTECTIVE_OR_LIQUIDATION_EXITS`：各路径只执行选中的唯一退出，扣退出费、释放锁定资金、实现 PnL、关闭仓位。
-12. `MARK_TO_MARKET_CLOSE`：以 mark close 计算未实现 PnL，生成 wallet/margin/equity/available balance 快照和该分钟 equity point。
-13. `INTRAMINUTE_DRAWDOWN_HALT`：用该分钟对组合最不利的 mark extremes 计算审计最低权益；最低或 close 权益相对历史峰值回撤 `>=10%` 即永久 `HALTED`。
-14. `CANONICAL_COMMIT`：按稳定顺序写 Event/Ledger/Trade/Equity hashes，更新下分钟状态。
+1. `LOAD_CLOSED_INPUTS`
+2. `FAIL_CLOSED_DATA_GATE`
+3. `OPENING_POSITION_RECONCILIATION`
+4. `FUNDING_SETTLEMENT`
+5. `OPEN_GAP_PROTECTIVE_GATE`
+6. `SCHEDULED_OPEN_EXITS`
+7. `OPEN_EQUITY_AND_HALT_GATE`
+8. `ENTRY_PLANNING_AND_BATCH_GATE`
+9. `ENTRY_FILLS`
+10. `INTRAMINUTE_TRIGGER_DISCOVERY`
+11. `AMBIGUITY_POLICY_SELECTION`
+12. `PROTECTIVE_OR_LIQUIDATION_EXITS`
+13. `MARK_TO_MARKET_CLOSE`
+14. `HALT_AND_CANONICAL_COMMIT`
 
-## 6. 成交、费用与资金费公式
+`OPEN_GAP_PROTECTIVE_GATE` 只检查进入本分钟前已存在的仓位：mark open 越过估算爆仓线、trade open 越过 stop、trade open 越过 TP。优先级固定为 `ESTIMATED_LIQUIDATION > STOP > TAKE_PROFIT > SCHEDULED_EXIT`。open 保护性退出后，对应 Scheduled Intent/Plan 记录取消，禁止重复平仓。
 
-### 6.1 Entry 与计划退出
+funding 对进入该分钟前已持有且命中结算点的仓位结算；同刻退出仍结算，新 Entry 不结算。Scheduled Exit 在 Entry planning 前释放资金。Entry planner 必须看到 funding、保护性退出、Scheduled Exit 之后的真实当前账户状态。
 
-- Entry actual fill 必须等于 2B `expected_entry_fill_price`；不得基于同一成本模型再次滑点。
-- Scheduled Exit actual fill 必须等于 2B `ExitExecutionPlan.expected_exit_fill_price`。
-- `fee = abs(quantity * fill_price) * effective_fee_rate`，入场与每次退出各扣一次；Plan 中 `entry_fee` 是校验值而不是第二次扣款。
+## 6. 成交、费用、资金费与逐仓保证金
 
-### 6.2 stop、TP 与 gap
+- Entry/Scheduled Exit actual fill 必须分别等于 2B Plan 的 expected fill；Plan 已含滑点，禁止第二次加滑点。
+- `fee = abs(quantity * fill_price) * effective_fee_rate`；入场和每次退出各记一次。Plan fee 只用于一致性校验，唯一经济扣款来自 Ledger。
+- 非 gap stop/TP 使用 trigger reference 加一次退出方向不利滑点；gap 使用 trade open reference 加一次不利滑点，再按 tick 不利量化。
+- `funding_wallet_delta = -(side_sign * quantity * funding_mark_price * historical_rate)`，LONG `side_sign=+1`，SHORT `-1`；每个 position/timestamp 恰好一次。
 
-非 gap 触发以 trigger 为 reference，再施加一次退出方向的不利滑点；结果应等于同版本 Plan 的 expected protective fill。gap-at-open 时 reference 改为 trade open：卖出乘 `(1-slippage)`，买入乘 `(1+slippage)`，之后按 tick 以不利方向量化。禁止先使用已含滑点价格再重复滑点。
+V1 唯一逐仓定义：
 
-### 6.3 真实资金费
+```text
+isolated_margin_balance = origin EntryPlan.initial_margin
+M = isolated_margin_balance
+```
 
-`notional = quantity * funding_mark_price`。令 `side_sign=+1` 表示 LONG、`-1` 表示 SHORT：
+entry/exit fee 与 funding 只改变 wallet；margin lock/release 只改变 `locked_initial_margin`；fee/funding 不得再从 isolated margin 扣除。`isolated_margin_balance` 持仓期间不因 fee/funding 自动变化。这是 `ESTIMATED_FIXED_ISOLATED_MARGIN_V1 / ESTIMATED_NOT_EXCHANGE_EXACT` 近似。
 
-`wallet_delta = -(side_sign * notional * historical_funding_rate)`。
+Funding reserve 生命周期：Entry 锁定 Plan 全部 reserve；按 `funding_event_count` 计算 planned slice；每个实际 funding 事件释放一个 slice；实际 funding wallet delta 只记一次；Exit 释放剩余 reserve；funding 收入不增加 reserve；reserve 释放不是收入。若实际不利支付绝对值大于 remaining reserve，输出 `FUNDING_RESERVE_EXCEEDED` 并使路径 `EXECUTION_PATH_INVALID/INVALID`。任一事件后 `available_balance < 0`、wallet 无法覆盖 locks、或 `isolated_margin_balance <= 0` 均 INVALID，禁止 `max(0)` 修补。
 
-正费率时 LONG 支付、SHORT 收取；负费率相反。每个 nominal timestamp 每仓位恰好一次。资金费 reserve 按原风险上限逐事件释放，实际资金费只通过 wallet ledger 记一次；退出时释放剩余 reserve。
+## 7. 估算爆仓与触发
 
-## 7. 逐仓仓位与估算爆仓
-
-每个 symbol 最多一个 `IsolatedPosition`：side、quantity、entry time/price、initial margin、remaining fee/funding reserves、stop/TP、maintenance evidence、origin plan/batch hashes。BTC 与 ETH 可同时持仓，资金通过账户锁定字段共享但不可重复使用。
-
-估算模型 `LINEAR_USDT_ISOLATED_LIQ_ESTIMATE_V1`：令 `M` 为当前逐仓 margin、`q` 为数量、`P` 为 entry price、`r` 为对应 tier 的 maintenance margin rate：
+`q=quantity`、`P=entry_price`、`r=maintenance_margin_rate`：
 
 - LONG：`liq = max(0, (q*P - M) / (q*(1-r)))`
 - SHORT：`liq = (M + q*P) / (q*(1+r))`
 
-LONG 用 mark low、SHORT 用 mark high 检查；开盘已越过则使用 mark open 作为估算退出 reference，否则使用 liq。结果带 `ESTIMATED_NOT_EXCHANGE_EXACT` 水印。maintenance 证据缺失或超出有效期且当时有仓位，路径 `INVALID`。
+LONG 用 mark low、SHORT 用 mark high 检查。open 已越过时 reference=mark open，否则 reference=liq。maintenance 证据必须含 tier/notional range、有效期、来源 hash 和 `VERIFIED|APPROXIMATED`；持仓时缺失/过期即 INVALID。任何输出必须带 `ESTIMATED_NOT_EXCHANGE_EXACT`。
 
-## 8. 同分钟歧义双路径
+## 8. 有界双路径歧义
 
-先处理 gap-at-open；其优先于所有 intraminute 触发。剩余多个触发时：
+模拟从同一 root 最多维护两个长期 path identity：`BASELINE` 和 `CONSERVATIVE`。第一次歧义初始化两条；以后每条路径按自身 policy 通过 `resolve_ambiguity(path_kind, parent_state, candidates) -> single successor` 产生一个后继，绝不再 fork 成 4/8/... 条。最大 active path 数永远 `<=2`；状态重新相同也保留两个 identity。
 
-- `BASELINE`：选择相对各自分钟 open 的绝对百分比距离最小者；相等时 `LIQUIDATION > STOP > TAKE_PROFIT`。
-- `CONSERVATIVE`：枚举 1m OHLC 能支持的首触发候选，选择产生最低 minute-end equity 的结果；相等使用同一优先级。
-- 两条路径均保存候选集合、选择理由和共同父 snapshot hash；即使结果相同也保留两条记录。
-- 不允许用 close、未来分钟或后续资金费选择当分钟路径。
+- BASELINE：选择相对各自 minute open 绝对百分比距离最小的触发；相等时 `LIQUIDATION > STOP > TAKE_PROFIT`。
+- CONSERVATIVE：在 1m OHLC 可支持的候选中选择 minute-end equity 最低的结果；相等用同一优先级。
+- 每个歧义分钟保存候选集、选择理由、parent snapshot hash 和 `PATH_AMBIGUOUS`；不得使用未来 close 之后的数据、后续分钟或后续 funding 选择当前结果。
 
-## 9. Trade、Ledger 与 Equity 输出
+## 9. Account、HALT、INVALID 与 Equity
 
-`TradeRecord` 至少包含：symbol、direction、entry_time、entry_price、exit_time、exit_price、quantity、entry_fee、exit_fee、total_fees、funding、gross_pnl、net_pnl、exit_reason、origin plan/candidate/batch IDs、path kind、内容 hash。
+所有经济量仅由 Ledger reducer 产生：
 
-`gross_pnl`：LONG 为 `q*(exit-entry)`，SHORT 为 `q*(entry-exit)`；`net_pnl = gross_pnl - entry_fee - exit_fee + funding_wallet_delta_sum`。
+```text
+equity = wallet_balance + unrealized_pnl
+available_balance = wallet_balance
+  - locked_initial_margin
+  - locked_fee_reserve
+  - locked_funding_reserve
+  - pending_plan_reserve
+```
 
-Ledger 类型闭集：`ENTRY_FEE, EXIT_FEE, FUNDING, REALIZED_PNL, MARGIN_LOCK, MARGIN_RELEASE, FEE_RESERVE_LOCK/RELEASE, FUNDING_RESERVE_LOCK/RELEASE`。所有经济量只从 Ledger reducer 推导，不允许 TradeRecord 反向改账户。
+禁止同一资金重复占用；同一 Plan、funding timestamp、fee obligation 和 position close 只能入账一次。
 
-每分钟每路径至少一个 `EquityPoint`：event time、wallet、locked margin/reserves、available、unrealized、equity、peak、drawdown、path state、state hash。
+HALT 为吸收状态但不是立即终止模拟。PathResult 保存 `halt_trigger_time_utc_ms`、`halt_reason`、`entry_disabled=true`、可空 `flat_after_halt_time_utc_ms`、`final_processed_time_utc_ms`。HALT 后永久禁止 Entry，但已有仓位继续 funding、保护性退出和 Scheduled Exit，继续产生 Ledger/Trade/Equity，直到全部关闭或 experiment end。2C 不计算年化或晋级指标；未来 2D 只能用 halt 前区间做晋级。
 
-## 10. 冻结 Requirements（48）
+`INTRAMINUTE_HALT_POLICY_V1=CONSERVATIVE_FULL_MINUTE_WHILE_INTRAMINUTE_POSITION_ACTIVE`：
+
+- open gap 或 Scheduled Exit 已关闭的仓位不使用该分钟后续 mark extreme。
+- 本分钟 open 新建且持有到 close 的仓位使用完整分钟不利 mark extreme。
+- 本分钟 intraminute 保护性退出的仓位，保守地允许使用完整分钟不利 mark extreme，并明确标记估算。
+- 组合最低权益只使用当时仍可能暴露的仓位集合；阈值统一为相对 peak `>=10%`。
+
+每个“成功完成 `MARK_TO_MARKET_CLOSE` 的有效分钟”每路径至少一个 EquityPoint；INVALID 分钟若无法完成 mark，不适用该要求。
+
+## 10. 输出闭集
+
+每次完整运行输出：实际 Intent、2B Plan/ExecutionRejection、Fill、Event、Ledger、Position、Trade、Equity、StateSnapshot、PathResult 和 Canonical manifest。`TradeRecord.net_pnl = gross_pnl - entry_fee - exit_fee + funding_wallet_delta_sum`。Event 只保存事实；before/after 由 Ledger reducer 和 StateSnapshot 推导，不允许 Fill 或 TradeRecord 成为独立状态真相源。
+
+## 11. 冻结 Requirements（60）
 
 | 范畴 | Requirement IDs | 数量 |
 |---|---|---:|
-| 生命周期与顺序 | `2C-LIFE-001..008` | 8 |
-| 成交与触发 | `2C-FILL-001..008` | 8 |
-| 费用与资金费 | `2C-COST-001..006` | 6 |
-| 仓位与爆仓 | `2C-POS-001..006` | 6 |
-| 账户与风险 | `2C-ACCT-001..007` | 7 |
-| 数据与路径 | `2C-DATA-001..005` | 5 |
-| 身份与回放 | `2C-ID-001..004` | 4 |
-| 范围与安全 | `2C-SCOPE-001..004` | 4 |
-| **总计** |  | **48** |
+| 生命周期与规划 | `2C-LIFE-001..012` | 12 |
+| 成交与触发 | `2C-FILL-001..010` | 10 |
+| 费用与资金费 | `2C-COST-001..009` | 9 |
+| 仓位与爆仓 | `2C-POS-001..007` | 7 |
+| 账户与风险 | `2C-ACCT-001..010` | 10 |
+| 数据与路径 | `2C-DATA-001..006` | 6 |
+| 身份与回放 | `2C-ID-001..003` | 3 |
+| 范围与安全 | `2C-SCOPE-001..003` | 3 |
+| **总计** |  | **60** |
 
-逐项语义由验收矩阵唯一展开；实现不得新增未评审的 Requirement 或改变事件顺序版本。
+每项必须在验收矩阵绑定显式 Unit Test、Property Test 或 Golden Fixture、实现文件，以及适用的红队场景。
 
-## 11. 进入编码的硬门槛
+## 12. 编码授权与停止线
 
-- 四份文档经人工一次性审核明确批准。
-- 48 项 Requirement、16 个 timeline fixtures、24 个 red-team 场景无语义冲突。
-- 2B Plan 消费、资金费边界、费用不重复、双路径和 INVALID/HALTED 终止语义全部冻结。
-- 编码阶段仍不得加入 GUI、LLM、API Key、网络交易或 paper/live 自动化。
+本规范完成交叉审计后授权按 TDD 实施 2C，无需再次纯文档审批。编码必须从批准基线创建独立 feature 分支；每个 Task 先写独立参考/Golden 再写生产代码。完成后创建 Draft PR 并停止等待源码审查。不得开始 2D，亦不得增加 GUI、LLM、API Key、HTTP、交易接口或自动下单能力。
