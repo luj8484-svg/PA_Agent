@@ -83,6 +83,23 @@ class ValidatedMinuteInputs:
     audit_gaps: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SimulationInputs:
+    minute_slices: tuple[MinuteInputSlice, ...]
+    candidates: tuple[object, ...]
+    evidence_hashes: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        opens = tuple(item.minute_open_utc_ms for item in self.minute_slices)
+        if opens != tuple(sorted(set(opens))):
+            raise ValueError("simulation minute slices must be unique and sorted")
+        names = tuple(name for name, _ in self.evidence_hashes)
+        if names != tuple(sorted(set(names))):
+            raise ValueError("simulation evidence names must be unique and sorted")
+        for _, digest in self.evidence_hashes:
+            require_sha256(digest, "simulation evidence hash")
+
+
 def validate_minute_inputs(
     *, has_positions: bool, has_due_event: bool, minute: MinuteInputSlice
 ) -> ValidatedMinuteInputs | PathInvalidEvent:
@@ -105,4 +122,3 @@ def validate_minute_inputs(
     if minute.index_expected and not minute.index_present:
         audit.append("INDEX_GAP")
     return ValidatedMinuteInputs(minute, tuple(audit))
-
