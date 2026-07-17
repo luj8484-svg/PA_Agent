@@ -196,6 +196,54 @@ def test_complete_run_requires_contiguous_start_through_exit_open() -> None:
         )
 
 
+def test_complete_run_cannot_finish_valid_with_open_position() -> None:
+    from pa_agent.research_backtest.domain.enums import Side
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    candidate = SimpleNamespace(candidate_id="candidate", decision_time_utc_ms=0)
+    intent = SimpleNamespace(
+        intent_id="entry-intent",
+        symbol="BTCUSDT",
+        target_execution_time_utc_ms=60_000,
+    )
+    plan = SimpleNamespace(
+        plan_id="entry-plan",
+        candidate_id="candidate",
+        symbol="BTCUSDT",
+        side=Side.LONG,
+        target_execution_time_utc_ms=60_000,
+        quantity=Decimal("1"),
+        expected_entry_fill_price=Decimal("100"),
+        entry_fee=Decimal("0"),
+        initial_margin=Decimal("100"),
+        stop_trigger_price=Decimal("80"),
+        take_profit_trigger_price=Decimal("120"),
+        exit_fee_reserve=Decimal("0"),
+        funding_reserve=Decimal("0"),
+        funding_event_upper_bound=0,
+        maximum_exit_time_utc_ms=999_999,
+        required_cash=Decimal("100"),
+    )
+    result = run_simulation(
+        SimulationInputs((minute(60_000), minute(120_000)), (candidate,), ()),
+        config(simulation_start_utc_ms=60_000, simulation_end_exit_open_utc_ms=120_000),
+        dependencies(
+            entry_intent_factory=lambda _: intent,
+            planners=PlannerDependencies(lambda *_: plan, lambda value: value, None, None),
+            maintenance_evidence_factory=lambda *_: replace(
+                maintenance(), effective_end_utc_ms=180_000
+            ),
+        ),
+    )
+    assert all(path.path_result.path_state.value == "INVALID" for path in result.paths)
+    assert all(
+        path.path_result.invalid_reason == "EXPERIMENT_END_POSITION_OPEN" for path in result.paths
+    )
+    assert all(path.minute_results[-1].equity_points == () for path in result.paths)
+
+
 def test_experiment_end_blocks_entry_planning() -> None:
     from pa_agent.research_backtest.simulation.domain import initial_engine_state
     from pa_agent.research_backtest.simulation.engine import process_minute
@@ -537,6 +585,113 @@ def test_simultaneous_scheduled_reasons_are_preserved_with_intent() -> None:
             (ScheduledExitReason.HALT_EXIT, ScheduledExitReason.TIME_EXIT),
         ),
     )
+
+
+def test_later_halt_replaces_lower_priority_pending_time_exit() -> None:
+    from pa_agent.research_backtest.domain.enums import ScheduledExitReason
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.halt import apply_halt
+
+    pos = replace(
+        position(),
+        maximum_exit_time_utc_ms=999_999,
+        stop_trigger_price=Decimal("80"),
+        take_profit_trigger_price=Decimal("120"),
+    )
+    old = SimpleNamespace(
+        intent_id="time-intent",
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        scheduled_exit_reason=ScheduledExitReason.TIME_EXIT,
+        target_execution_time_utc_ms=180_000,
+    )
+    state = replace(
+        apply_halt(
+            initial_engine_state(config(simulation_end_exit_open_utc_ms=240_000)),
+            0,
+            "TEST_HALT",
+        ),
+        positions=(pos,),
+        pending_exit_intents=(old,),
+        pending_exit_reason_matches=(("time-intent", (ScheduledExitReason.TIME_EXIT,)),),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+
+    def exit_factory(actual_position, reasons, event_time, _state):
+        return SimpleNamespace(
+            intent_id="halt-intent",
+            position_id=actual_position.position_id,
+            symbol=actual_position.symbol,
+            scheduled_exit_reason=ScheduledExitReason.HALT_EXIT,
+            target_execution_time_utc_ms=event_time + 1,
+        )
+
+    result = process_minute(
+        state,
+        minute(60_000),
+        config(simulation_end_exit_open_utc_ms=240_000),
+        dependencies(exit_intent_factory=exit_factory),
+    )
+    assert tuple(item.intent_id for item in result.state.pending_exit_intents) == ("halt-intent",)
+    assert result.state.pending_exit_reason_matches == (
+        (
+            "halt-intent",
+            (ScheduledExitReason.HALT_EXIT, ScheduledExitReason.TIME_EXIT),
+        ),
+    )
+
+
+def test_exit_account_invariant_failure_is_terminal_invalid() -> None:
+    from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    pos = replace(
+        position(), stop_trigger_price=Decimal("80"), take_profit_trigger_price=Decimal("120")
+    )
+    due = SimpleNamespace(
+        intent_id="due-exit",
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        target_execution_time_utc_ms=60_000,
+    )
+    plan = SimpleNamespace(
+        plan_id="exit-plan",
+        intent_id="due-exit",
+        origin_candidate_id=pos.origin_candidate_id,
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        position_side=Side.LONG,
+        scheduled_exit_reason=ScheduledExitReason.TIME_EXIT,
+        target_execution_time_utc_ms=60_000,
+        quantity=pos.quantity,
+        expected_exit_fill_price=Decimal("1"),
+        expected_exit_fee=Decimal("1"),
+    )
+    state = replace(
+        initial_engine_state(config()),
+        wallet_balance=Decimal("20"),
+        equity=Decimal("20"),
+        positions=(pos,),
+        pending_exit_intents=(due,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    result = process_minute(
+        state,
+        minute(60_000),
+        config(),
+        dependencies(
+            planners=PlannerDependencies(None, None, lambda *_: plan, lambda value: value)
+        ),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert result.planning_outputs[-1].reason == "ACCOUNT_INVARIANT_VIOLATION"
 
 
 def test_funding_record_from_another_minute_is_invalid() -> None:

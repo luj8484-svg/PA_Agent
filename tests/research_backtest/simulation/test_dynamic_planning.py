@@ -174,6 +174,14 @@ def test_experiment_end_condition_occurs_before_target_open() -> None:
     assert experiment_end_condition_time(600_000) == 599_999
 
 
+def test_experiment_end_condition_accounts_for_exit_delay() -> None:
+    from pa_agent.research_backtest.simulation.planning import experiment_end_condition_time
+
+    assert experiment_end_condition_time(180_000, 0) == 179_999
+    assert experiment_end_condition_time(180_000, 1) == 119_999
+    assert experiment_end_condition_time(180_000, 2) == 59_999
+
+
 def test_missing_expected_trend_evidence_is_invalid() -> None:
     from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
     from pa_agent.research_backtest.simulation.planning import discover_scheduled_exits

@@ -53,6 +53,8 @@ from pa_agent.research_backtest.simulation.liquidation import (
 from pa_agent.research_backtest.simulation.output import PathResult
 from pa_agent.research_backtest.simulation.planning import (
     PlannerDependencies,
+    choose_scheduled_reason,
+    merge_scheduled_reasons,
     plan_due_entries,
     plan_due_exits,
     scheduled_exit_reasons,
@@ -106,6 +108,11 @@ class EngineDependencies:
     planning_evidence_factory: Callable[[EngineState, MinuteInputSlice], object]
     maintenance_evidence_factory: Callable[[IsolatedPosition, int], object]
     execution_cost_factory: Callable[[str, int], object]
+    exit_delay_minutes: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.exit_delay_minutes) is not int or self.exit_delay_minutes not in {0, 1, 2}:
+            raise ValueError("exit delay must be 0, 1, or 2 minutes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,7 +384,19 @@ def process_minute(
             fee_rate=cost.fee_rate,
             tick_size=cost.tick_size,
         )
-        state, entries, trade = apply_exit_fill(state, pos, fill)
+        try:
+            state, entries, trade = apply_exit_fill(state, pos, fill)
+        except AccountInvariantError:
+            return _invalid_result(
+                state,
+                "ACCOUNT_INVARIANT_VIOLATION",
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
         fills.append(fill)
         ledgers.extend(entries)
         trades.append(trade)
@@ -443,7 +462,19 @@ def process_minute(
             reason = output.scheduled_exit_reason
             matched = dict(state.pending_exit_reason_matches).get(output.intent_id, (reason,))
             fill = make_scheduled_exit_fill(output, matched, reason)
-            state, entries, trade = apply_exit_fill(state, pos, fill)
+            try:
+                state, entries, trade = apply_exit_fill(state, pos, fill)
+            except AccountInvariantError:
+                return _invalid_result(
+                    state,
+                    "ACCOUNT_INVARIANT_VIOLATION",
+                    time,
+                    events,
+                    fills,
+                    ledgers,
+                    trades,
+                    planning,
+                )
             fills.append(fill)
             ledgers.extend(entries)
             trades.append(trade)
@@ -578,7 +609,19 @@ def process_minute(
             fee_rate=cost.fee_rate,
             tick_size=cost.tick_size,
         )
-        state, entries, trade = apply_exit_fill(state, pos, fill)
+        try:
+            state, entries, trade = apply_exit_fill(state, pos, fill)
+        except AccountInvariantError:
+            return _invalid_result(
+                state,
+                "ACCOUNT_INVARIANT_VIOLATION",
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
         fills.append(fill)
         ledgers.extend(entries)
         trades.append(trade)
@@ -631,14 +674,18 @@ def process_minute(
 
     close_time = time + 59_999
     if dependencies.exit_intent_factory is not None:
-        pending_positions = {
-            getattr(intent, "position_id", None) for intent in state.pending_exit_intents
-        }
-        new_exit_intents: list[object] = []
-        new_exit_matches: list[tuple[str, tuple[object, ...]]] = []
+        pending_intents = list(state.pending_exit_intents)
+        reason_matches = dict(state.pending_exit_reason_matches)
+        created_intents: list[object] = []
         for pos in state.positions:
-            if pos.position_id in pending_positions:
-                continue
+            existing = next(
+                (
+                    intent
+                    for intent in pending_intents
+                    if getattr(intent, "position_id", None) == pos.position_id
+                ),
+                None,
+            )
             trend = next(
                 (
                     item
@@ -653,23 +700,50 @@ def process_minute(
                 trend,
                 state.path_state is PathState.HALTED,
                 config.simulation_end_exit_open_utc_ms,
+                dependencies.exit_delay_minutes,
             )
-            if reasons:
-                intent = dependencies.exit_intent_factory(pos, reasons, close_time, state)
-                new_exit_intents.append(intent)
-                new_exit_matches.append((intent.intent_id, reasons))
-        planning.extend(new_exit_intents)
+            if not reasons:
+                continue
+            existing_reasons = (
+                reason_matches.get(existing.intent_id, ()) if existing is not None else ()
+            )
+            if existing is not None and not existing_reasons:
+                existing_reason = getattr(existing, "scheduled_exit_reason", None)
+                existing_reasons = (existing_reason,) if existing_reason is not None else ()
+            combined = merge_scheduled_reasons(existing_reasons, reasons)
+            selected = choose_scheduled_reason(combined)
+            if (
+                existing is not None
+                and getattr(existing, "scheduled_exit_reason", None) is selected
+            ):
+                reason_matches[existing.intent_id] = combined
+                continue
+            if existing is not None:
+                pending_intents.remove(existing)
+                reason_matches.pop(existing.intent_id, None)
+                events.append(
+                    _event(
+                        state,
+                        time,
+                        EVENT_STAGES[13],
+                        "SCHEDULED_EXIT_SUPERSEDED",
+                        existing.intent_id,
+                    )
+                )
+            intent = dependencies.exit_intent_factory(pos, combined, close_time, state)
+            pending_intents.append(intent)
+            reason_matches[intent.intent_id] = combined
+            created_intents.append(intent)
+        planning.extend(created_intents)
         state = replace(
             state,
             pending_exit_intents=tuple(
                 sorted(
-                    (*state.pending_exit_intents, *new_exit_intents),
+                    pending_intents,
                     key=lambda item: (item.symbol, item.intent_id),
                 )
             ),
-            pending_exit_reason_matches=tuple(
-                sorted((*state.pending_exit_reason_matches, *new_exit_matches))
-            ),
+            pending_exit_reason_matches=tuple(sorted(reason_matches.items())),
         )
     flat_time = state.flat_after_halt_time_utc_ms
     if state.path_state is PathState.HALTED and not state.positions and flat_time is None:
@@ -753,6 +827,23 @@ def run_simulation(
             state = result.state
             if state.path_state is PathState.INVALID:
                 break
+        if state.positions and state.path_state is not PathState.INVALID:
+            invalid_event = PathInvalidEvent(
+                config.simulation_end_exit_open_utc_ms,
+                "EXPERIMENT_END_POSITION_OPEN",
+            )
+            state = replace(
+                state,
+                path_state=PathState.INVALID,
+                final_processed_time_utc_ms=config.simulation_end_exit_open_utc_ms,
+            )
+            terminal = minute_results[-1]
+            minute_results[-1] = replace(
+                terminal,
+                state=state,
+                equity_points=(),
+                planning_outputs=(*terminal.planning_outputs, invalid_event),
+            )
         path_result = PathResult(
             path_state=state.path_state,
             final_processed_time_utc_ms=state.final_processed_time_utc_ms

@@ -188,10 +188,17 @@ _REASON_PRIORITY = (
 )
 
 
-def experiment_end_condition_time(simulation_end_exit_open_utc_ms: int) -> int:
+def experiment_end_condition_time(
+    simulation_end_exit_open_utc_ms: int, exit_delay_minutes: int = 0
+) -> int:
     if simulation_end_exit_open_utc_ms <= 0 or simulation_end_exit_open_utc_ms % 60_000:
         raise ValueError("experiment end must be a positive UTC minute open")
-    return simulation_end_exit_open_utc_ms - 1
+    if type(exit_delay_minutes) is not int or exit_delay_minutes not in {0, 1, 2}:
+        raise ValueError("exit delay must be 0, 1, or 2 minutes")
+    condition_time = simulation_end_exit_open_utc_ms - exit_delay_minutes * 60_000 - 1
+    if condition_time < 0:
+        raise ValueError("experiment interval is too short for configured exit delay")
+    return condition_time
 
 
 def choose_scheduled_reason(
@@ -203,12 +210,20 @@ def choose_scheduled_reason(
     raise ValueError("scheduled exit reason set is empty")
 
 
+def merge_scheduled_reasons(
+    *groups: tuple[ScheduledExitReason, ...],
+) -> tuple[ScheduledExitReason, ...]:
+    combined = {reason for group in groups for reason in group}
+    return tuple(reason for reason in _REASON_PRIORITY if reason in combined)
+
+
 def scheduled_exit_reasons(
     position: IsolatedPosition,
     event_time_utc_ms: int,
     trend_evidence: TrendEvidence | None,
     halted: bool,
     simulation_end_exit_open_utc_ms: int,
+    exit_delay_minutes: int = 0,
 ) -> tuple[ScheduledExitReason, ...]:
     reasons: set[ScheduledExitReason] = set()
     if halted:
@@ -222,7 +237,9 @@ def scheduled_exit_reasons(
             reasons.add(ScheduledExitReason.TREND_EXIT)
         if position.side is Side.SHORT and trend_evidence.trend_state is not TrendState.BEAR:
             reasons.add(ScheduledExitReason.TREND_EXIT)
-    if event_time_utc_ms == experiment_end_condition_time(simulation_end_exit_open_utc_ms):
+    if event_time_utc_ms == experiment_end_condition_time(
+        simulation_end_exit_open_utc_ms, exit_delay_minutes
+    ):
         reasons.add(ScheduledExitReason.EXPERIMENT_END)
     return tuple(reason for reason in _REASON_PRIORITY if reason in reasons)
 
