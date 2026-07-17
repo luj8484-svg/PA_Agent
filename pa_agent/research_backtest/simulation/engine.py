@@ -108,11 +108,26 @@ class EngineDependencies:
     planning_evidence_factory: Callable[[EngineState, MinuteInputSlice], object]
     maintenance_evidence_factory: Callable[[IsolatedPosition, int], object]
     execution_cost_factory: Callable[[str, int], object]
-    exit_delay_minutes: int = 0
+    exit_delay_minutes: int | None = None
 
     def __post_init__(self) -> None:
-        if type(self.exit_delay_minutes) is not int or self.exit_delay_minutes not in {0, 1, 2}:
+        configured = self.exit_delay_minutes
+        factory_delay = getattr(self.exit_intent_factory, "exit_delay_minutes", None)
+        for value in (configured, factory_delay):
+            if value is not None and (type(value) is not int or value not in {0, 1, 2}):
+                raise ValueError("exit delay must be 0, 1, or 2 minutes")
+        if configured is not None and factory_delay is not None and configured != factory_delay:
+            raise ValueError("EngineDependencies exit delay does not match intent factory")
+
+    @property
+    def resolved_exit_delay_minutes(self) -> int:
+        factory_delay = getattr(self.exit_intent_factory, "exit_delay_minutes", None)
+        value = factory_delay if factory_delay is not None else self.exit_delay_minutes
+        if value is None:
+            return 0
+        if type(value) is not int or value not in {0, 1, 2}:
             raise ValueError("exit delay must be 0, 1, or 2 minutes")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,7 +715,7 @@ def process_minute(
                 trend,
                 state.path_state is PathState.HALTED,
                 config.simulation_end_exit_open_utc_ms,
-                dependencies.exit_delay_minutes,
+                dependencies.resolved_exit_delay_minutes,
             )
             if not reasons:
                 continue

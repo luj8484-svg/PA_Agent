@@ -237,3 +237,31 @@ def test_production_exit_factory_calls_existing_2b_intent_function() -> None:
     assert isinstance(result, ExitIntent)
     assert result.scheduled_exit_reason is ScheduledExitReason.TREND_EXIT
     assert result.target_execution_time_utc_ms == 180_000
+
+
+def test_engine_derives_exit_delay_from_production_intent_factory() -> None:
+    from pa_agent.research_backtest.domain.config import execution_time_config
+    from pa_agent.research_backtest.simulation.engine import EngineDependencies
+    from pa_agent.research_backtest.simulation.planning import (
+        PlannerDependencies,
+        make_scheduled_exit_intent_factory,
+    )
+
+    factory = make_scheduled_exit_intent_factory(
+        execution_time_config(entry_delay_minutes=1, exit_delay_minutes=2),
+        computational_experiment_id="e" * 64,
+        code_commit="c" * 40,
+        dependency_lock_hash="b" * 64,
+    )
+    deps = EngineDependencies(
+        PlannerDependencies(None, None, None, None),
+        None,
+        factory,
+        lambda *_: None,
+        lambda *_: None,
+        lambda *_: None,
+    )
+    assert deps.resolved_exit_delay_minutes == 2
+
+    with pytest.raises(ValueError, match="does not match"):
+        replace(deps, exit_delay_minutes=1)

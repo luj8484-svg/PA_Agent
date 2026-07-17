@@ -108,6 +108,7 @@ def make_scheduled_exit_intent_factory(
             dependency_lock_hash=dependency_lock_hash,
         )
 
+    factory.exit_delay_minutes = execution_config.exit_delay_minutes  # type: ignore[attr-defined]
     return factory
 
 
