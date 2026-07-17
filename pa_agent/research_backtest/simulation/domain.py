@@ -162,6 +162,7 @@ class EngineState:
     consumed_plan_ids: tuple[str, ...]
     consumed_funding_ids: tuple[str, ...]
     consumed_close_ids: tuple[str, ...]
+    consumed_ledger_ids: tuple[str, ...]
     halt_trigger_time_utc_ms: int | None
     halt_reason: str | None
     flat_after_halt_time_utc_ms: int | None
@@ -185,6 +186,7 @@ def initial_engine_state(config: SimulationConfig, path_kind: PathKind = PathKin
         consumed_plan_ids=(),
         consumed_funding_ids=(),
         consumed_close_ids=(),
+        consumed_ledger_ids=(),
         halt_trigger_time_utc_ms=None,
         halt_reason=None,
         flat_after_halt_time_utc_ms=None,
