@@ -25,6 +25,8 @@ class IsolatedPosition:
     origin_plan_id: str
     origin_candidate_id: str
     maximum_exit_time_utc_ms: int
+    entry_fee_paid: Decimal = Decimal("0")
+    funding_wallet_delta_sum: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         if not self.position_id or not self.origin_plan_id or not self.origin_candidate_id:
@@ -43,6 +45,7 @@ class IsolatedPosition:
             "remaining_fee_reserve",
             "remaining_funding_reserve",
             "planned_funding_slice",
+            "entry_fee_paid",
         )
         for name in positive + nonnegative:
             value = getattr(self, name)
@@ -57,3 +60,30 @@ class IsolatedPosition:
         if type(self.remaining_funding_events) is not int or self.remaining_funding_events < 0:
             raise ValueError("remaining funding event count must be nonnegative integer")
 
+
+def position_from_entry_plan(plan: object) -> IsolatedPosition:
+    funding_count = getattr(plan, "funding_event_upper_bound")
+    funding_reserve = getattr(plan, "funding_reserve")
+    planned_slice = (
+        funding_reserve / Decimal(funding_count) if funding_count > 0 else Decimal("0")
+    )
+    return IsolatedPosition(
+        position_id=f"position:{getattr(plan, 'plan_id')}",
+        symbol=getattr(plan, "symbol"),
+        side=getattr(plan, "side"),
+        quantity=getattr(plan, "quantity"),
+        entry_time_utc_ms=getattr(plan, "target_execution_time_utc_ms"),
+        entry_price=getattr(plan, "expected_entry_fill_price"),
+        initial_margin=getattr(plan, "initial_margin"),
+        isolated_margin_balance=getattr(plan, "initial_margin"),
+        stop_trigger_price=getattr(plan, "stop_trigger_price"),
+        take_profit_trigger_price=getattr(plan, "take_profit_trigger_price"),
+        remaining_fee_reserve=getattr(plan, "exit_fee_reserve"),
+        remaining_funding_reserve=funding_reserve,
+        planned_funding_slice=planned_slice,
+        remaining_funding_events=funding_count,
+        origin_plan_id=getattr(plan, "plan_id"),
+        origin_candidate_id=getattr(plan, "candidate_id"),
+        maximum_exit_time_utc_ms=getattr(plan, "maximum_exit_time_utc_ms"),
+        entry_fee_paid=getattr(plan, "entry_fee"),
+    )

@@ -89,5 +89,8 @@ def apply_funding_to_position(
             position.remaining_funding_reserve - settlement.reserve_release
         ),
         remaining_funding_events=position.remaining_funding_events - 1,
+        funding_wallet_delta_sum=(
+            position.funding_wallet_delta_sum + settlement.wallet_delta
+        ),
     )
 
