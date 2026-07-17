@@ -7,9 +7,7 @@ from hypothesis import strategies as st
 
 
 def state():
-    from pa_agent.research_backtest.simulation.domain import EngineState
-    from pa_agent.research_backtest.simulation.domain import PathKind
-    from pa_agent.research_backtest.simulation.domain import PathState
+    from pa_agent.research_backtest.simulation.domain import EngineState, PathKind, PathState
 
     z = Decimal("0")
     return EngineState(
@@ -36,8 +34,7 @@ def state():
 
 
 def entry(kind: str, amount: str, ident: str = "one"):
-    from pa_agent.research_backtest.simulation.ledger import LedgerEntry
-    from pa_agent.research_backtest.simulation.ledger import LedgerKind
+    from pa_agent.research_backtest.simulation.ledger import LedgerEntry, LedgerKind
 
     value = Decimal(amount)
     kwargs = {
@@ -77,8 +74,7 @@ def test_fee_changes_wallet_once() -> None:
 
 
 def test_margin_lock_changes_available_not_wallet() -> None:
-    from pa_agent.research_backtest.simulation.ledger import available_balance
-    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+    from pa_agent.research_backtest.simulation.ledger import available_balance, reduce_ledger
 
     result = reduce_ledger(state(), (entry("MARGIN_LOCK", "1000"),))
     assert result.wallet_balance == Decimal("10000")
@@ -90,16 +86,13 @@ def test_reserve_release_is_not_income() -> None:
     from pa_agent.research_backtest.simulation.ledger import reduce_ledger
 
     locked = reduce_ledger(state(), (entry("FUNDING_RESERVE_LOCK", "20", "lock"),))
-    released = reduce_ledger(
-        locked, (entry("FUNDING_RESERVE_RELEASE", "-20", "release"),)
-    )
+    released = reduce_ledger(locked, (entry("FUNDING_RESERVE_RELEASE", "-20", "release"),))
     assert released.wallet_balance == Decimal("10000")
     assert released.locked_funding_reserve == Decimal("0")
 
 
 def test_duplicate_ledger_entry_is_rejected() -> None:
-    from pa_agent.research_backtest.simulation.ledger import LedgerReplayError
-    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+    from pa_agent.research_backtest.simulation.ledger import LedgerReplayError, reduce_ledger
 
     first = reduce_ledger(state(), (entry("ENTRY_FEE", "-10"),))
     with pytest.raises(LedgerReplayError):
@@ -107,16 +100,14 @@ def test_duplicate_ledger_entry_is_rejected() -> None:
 
 
 def test_negative_available_is_invalid_not_clamped() -> None:
-    from pa_agent.research_backtest.simulation.ledger import AccountInvariantError
-    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+    from pa_agent.research_backtest.simulation.ledger import AccountInvariantError, reduce_ledger
 
     with pytest.raises(AccountInvariantError, match="available"):
         reduce_ledger(state(), (entry("MARGIN_LOCK", "10001"),))
 
 
 def test_release_beyond_lock_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.ledger import AccountInvariantError
-    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+    from pa_agent.research_backtest.simulation.ledger import AccountInvariantError, reduce_ledger
 
     with pytest.raises(AccountInvariantError, match="lock"):
         reduce_ledger(state(), (entry("MARGIN_RELEASE", "-1"),))
@@ -135,9 +126,7 @@ def test_margin_lock_release_conserves_wallet(amount: int) -> None:
     from pa_agent.research_backtest.simulation.ledger import reduce_ledger
 
     locked = reduce_ledger(state(), (entry("MARGIN_LOCK", str(amount), "lock"),))
-    released = reduce_ledger(
-        locked, (entry("MARGIN_RELEASE", str(-amount), "release"),)
-    )
+    released = reduce_ledger(locked, (entry("MARGIN_RELEASE", str(-amount), "release"),))
     assert released.wallet_balance == state().wallet_balance
     assert released.locked_initial_margin == Decimal("0")
 

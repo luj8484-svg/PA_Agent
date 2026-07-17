@@ -4,24 +4,23 @@ from decimal import Decimal
 import pytest
 
 from pa_agent.research_backtest.domain.enums import Side
-
 from tests.research_backtest.simulation.test_funding_liquidation import position
 from tests.research_backtest.simulation.test_inputs_and_invalid import bar
 
 
 def test_open_gap_priority_liquidation_over_stop_tp() -> None:
-    from pa_agent.research_backtest.simulation.triggers import TriggerKind
-    from pa_agent.research_backtest.simulation.triggers import choose_open_gap_trigger
-    from pa_agent.research_backtest.simulation.triggers import discover_open_gap_candidates
+    from pa_agent.research_backtest.simulation.triggers import (
+        TriggerKind,
+        choose_open_gap_trigger,
+        discover_open_gap_candidates,
+    )
 
     pos = replace(
         position(),
         stop_trigger_price=Decimal("105"),
         take_profit_trigger_price=Decimal("95"),
     )
-    candidates = discover_open_gap_candidates(
-        pos, bar(), bar(), Decimal("101")
-    )
+    candidates = discover_open_gap_candidates(pos, bar(), bar(), Decimal("101"))
     assert {item.kind for item in candidates} == {
         TriggerKind.LIQUIDATION,
         TriggerKind.STOP,
@@ -31,9 +30,11 @@ def test_open_gap_priority_liquidation_over_stop_tp() -> None:
 
 
 def test_short_open_gap_priority_is_symmetric() -> None:
-    from pa_agent.research_backtest.simulation.triggers import TriggerKind
-    from pa_agent.research_backtest.simulation.triggers import choose_open_gap_trigger
-    from pa_agent.research_backtest.simulation.triggers import discover_open_gap_candidates
+    from pa_agent.research_backtest.simulation.triggers import (
+        TriggerKind,
+        choose_open_gap_trigger,
+        discover_open_gap_candidates,
+    )
 
     pos = replace(
         position(Side.SHORT),
@@ -68,9 +69,11 @@ def test_stop_tp_use_trade_and_liquidation_uses_mark() -> None:
 def test_protective_fill_applies_slippage_once_and_adverse_tick(
     side: Side, reference: str, expected: str
 ) -> None:
-    from pa_agent.research_backtest.simulation.triggers import TriggerCandidate
-    from pa_agent.research_backtest.simulation.triggers import TriggerKind
-    from pa_agent.research_backtest.simulation.triggers import protective_fill_price
+    from pa_agent.research_backtest.simulation.triggers import (
+        TriggerCandidate,
+        TriggerKind,
+        protective_fill_price,
+    )
 
     candidate = TriggerCandidate(
         TriggerKind.STOP,
@@ -81,14 +84,13 @@ def test_protective_fill_applies_slippage_once_and_adverse_tick(
         True,
         Decimal("0"),
     )
-    assert protective_fill_price(
-        side, candidate, Decimal("0.001"), Decimal("0.1")
-    ) == Decimal(expected)
+    assert protective_fill_price(side, candidate, Decimal("0.001"), Decimal("0.1")) == Decimal(
+        expected
+    )
 
 
 def candidate(kind: str, distance_price: str, equity: str):
-    from pa_agent.research_backtest.simulation.triggers import TriggerCandidate
-    from pa_agent.research_backtest.simulation.triggers import TriggerKind
+    from pa_agent.research_backtest.simulation.triggers import TriggerCandidate, TriggerKind
 
     return TriggerCandidate(
         TriggerKind(kind),
@@ -153,8 +155,10 @@ def test_twenty_ambiguities_never_grow_beyond_two_paths() -> None:
 
 
 def test_open_exited_position_is_excluded_from_intraminute_halt() -> None:
-    from pa_agent.research_backtest.simulation.halt import ExposureDisposition
-    from pa_agent.research_backtest.simulation.halt import uses_full_minute_extreme
+    from pa_agent.research_backtest.simulation.halt import (
+        ExposureDisposition,
+        uses_full_minute_extreme,
+    )
 
     assert not uses_full_minute_extreme(ExposureDisposition.OPEN_EXITED)
     assert uses_full_minute_extreme(ExposureDisposition.INTRAMINUTE_EXITED)
@@ -164,7 +168,6 @@ def test_open_exited_position_is_excluded_from_intraminute_halt() -> None:
 def test_halt_is_absorbing_and_preserves_final_time_separately() -> None:
     from pa_agent.research_backtest.simulation.domain import PathState
     from pa_agent.research_backtest.simulation.halt import apply_halt
-
     from tests.research_backtest.simulation.test_ledger_account import state
 
     halted = apply_halt(state(), 60_000, "DRAWDOWN_10_PERCENT")

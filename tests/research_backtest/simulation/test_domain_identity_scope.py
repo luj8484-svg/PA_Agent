@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import pytest
 
-
 HASH = "a" * 64
 COMMIT = "b" * 40
 
@@ -55,8 +54,10 @@ def test_simulation_config_rejects_float_money() -> None:
 
 
 def test_initial_state_is_frozen() -> None:
-    from pa_agent.research_backtest.simulation.domain import initial_engine_state
-    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+    from pa_agent.research_backtest.simulation.domain import (
+        initial_engine_state,
+        make_simulation_config,
+    )
 
     state = initial_engine_state(make_simulation_config(**config_payload()))
     assert state.wallet_balance == Decimal("10000")
@@ -79,8 +80,10 @@ def test_config_tamper_is_detected() -> None:
 
 def test_run_identity_excludes_acquisition_and_prefabricated_plans() -> None:
     from pa_agent.research_backtest.simulation.domain import make_simulation_config
-    from pa_agent.research_backtest.simulation.identity import SimulationInputIdentity
-    from pa_agent.research_backtest.simulation.identity import simulation_run_id
+    from pa_agent.research_backtest.simulation.identity import (
+        SimulationInputIdentity,
+        simulation_run_id,
+    )
 
     config = make_simulation_config(**config_payload())
     identity = SimulationInputIdentity(
@@ -106,8 +109,10 @@ def test_canonical_rejects_binary_float() -> None:
 
 
 def test_event_order_and_models_are_frozen() -> None:
-    from pa_agent.research_backtest.simulation.versions import EVENT_STAGES
-    from pa_agent.research_backtest.simulation.versions import LIQUIDATION_MODEL_VERSION
+    from pa_agent.research_backtest.simulation.versions import (
+        EVENT_STAGES,
+        LIQUIDATION_MODEL_VERSION,
+    )
 
     assert len(EVENT_STAGES) == 14
     assert EVENT_STAGES[4] == "OPEN_GAP_PROTECTIVE_GATE"

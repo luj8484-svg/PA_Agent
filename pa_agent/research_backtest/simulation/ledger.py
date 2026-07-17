@@ -102,12 +102,8 @@ def reduce_ledger(previous: EngineState, entries: tuple[LedgerEntry, ...]) -> En
             wallet_balance=wallet,
             locked_initial_margin=state.locked_initial_margin + item.initial_margin_delta,
             locked_fee_reserve=state.locked_fee_reserve + item.fee_reserve_delta,
-            locked_funding_reserve=(
-                state.locked_funding_reserve + item.funding_reserve_delta
-            ),
-            pending_plan_reserve=(
-                state.pending_plan_reserve + item.pending_plan_reserve_delta
-            ),
+            locked_funding_reserve=(state.locked_funding_reserve + item.funding_reserve_delta),
+            pending_plan_reserve=(state.pending_plan_reserve + item.pending_plan_reserve_delta),
             equity=equity,
             peak_equity=max(state.peak_equity, equity),
             consumed_ledger_ids=tuple(sorted(seen)),

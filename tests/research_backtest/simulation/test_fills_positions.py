@@ -11,8 +11,10 @@ from tests.research_backtest.execution.fixtures.entry_plan_case import complete_
 
 
 def initial_state():
-    from pa_agent.research_backtest.simulation.domain import initial_engine_state
-    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+    from pa_agent.research_backtest.simulation.domain import (
+        initial_engine_state,
+        make_simulation_config,
+    )
 
     config = make_simulation_config(
         symbols=("BTCUSDT", "ETHUSDT"),
@@ -67,8 +69,7 @@ def test_entry_fill_uses_exact_2b_price_and_geometry() -> None:
 
 
 def test_entry_fill_locks_cash_and_charges_fee_once() -> None:
-    from pa_agent.research_backtest.simulation.fills import apply_entry_fill
-    from pa_agent.research_backtest.simulation.fills import make_entry_fill
+    from pa_agent.research_backtest.simulation.fills import apply_entry_fill, make_entry_fill
     from pa_agent.research_backtest.simulation.ledger import available_balance
     from pa_agent.research_backtest.simulation.positions import position_from_entry_plan
 
@@ -85,8 +86,7 @@ def test_entry_fill_locks_cash_and_charges_fee_once() -> None:
 
 
 def test_entry_plan_cannot_be_consumed_twice() -> None:
-    from pa_agent.research_backtest.simulation.fills import apply_entry_fill
-    from pa_agent.research_backtest.simulation.fills import make_entry_fill
+    from pa_agent.research_backtest.simulation.fills import apply_entry_fill, make_entry_fill
     from pa_agent.research_backtest.simulation.positions import position_from_entry_plan
 
     plan = entry_plan()
@@ -98,8 +98,7 @@ def test_entry_plan_cannot_be_consumed_twice() -> None:
 
 
 def test_one_way_symbol_rejects_second_position() -> None:
-    from pa_agent.research_backtest.simulation.fills import apply_entry_fill
-    from pa_agent.research_backtest.simulation.fills import make_entry_fill
+    from pa_agent.research_backtest.simulation.fills import apply_entry_fill, make_entry_fill
     from pa_agent.research_backtest.simulation.positions import position_from_entry_plan
 
     plan = entry_plan()
@@ -128,8 +127,10 @@ def test_scheduled_exit_fill_uses_exact_2b_price_and_all_reasons() -> None:
 
 
 def test_exit_releases_all_locks_and_realizes_pnl() -> None:
-    from pa_agent.research_backtest.simulation.fills import apply_exit_fill
-    from pa_agent.research_backtest.simulation.fills import make_scheduled_exit_fill
+    from pa_agent.research_backtest.simulation.fills import (
+        apply_exit_fill,
+        make_scheduled_exit_fill,
+    )
     from pa_agent.research_backtest.simulation.positions import IsolatedPosition
 
     plan = exit_plan()

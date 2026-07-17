@@ -20,8 +20,10 @@ def bar(symbol: str = "BTCUSDT", *, closed: bool = True):
 
 
 def test_unclosed_bar_fails_closed() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=False,
@@ -32,8 +34,10 @@ def test_unclosed_bar_fails_closed() -> None:
 
 
 def test_held_position_trade_gap_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=True,
@@ -44,8 +48,10 @@ def test_held_position_trade_gap_is_invalid() -> None:
 
 
 def test_held_position_mark_gap_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=True,
@@ -56,9 +62,11 @@ def test_held_position_mark_gap_is_invalid() -> None:
 
 
 def test_flat_irrelevant_gap_is_only_recorded() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import ValidatedMinuteInputs
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        ValidatedMinuteInputs,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=False,
@@ -70,9 +78,11 @@ def test_flat_irrelevant_gap_is_only_recorded() -> None:
 
 
 def test_due_entry_requires_trade_but_not_mark() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import ValidatedMinuteInputs
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        ValidatedMinuteInputs,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=False,
@@ -84,8 +94,10 @@ def test_due_entry_requires_trade_but_not_mark() -> None:
 
 
 def test_due_entry_without_trade_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=False,
@@ -96,8 +108,10 @@ def test_due_entry_without_trade_is_invalid() -> None:
 
 
 def test_expected_funding_missing_while_held_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=True,
@@ -108,9 +122,11 @@ def test_expected_funding_missing_while_held_is_invalid() -> None:
 
 
 def test_index_gap_never_invalidates() -> None:
-    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
-    from pa_agent.research_backtest.simulation.inputs import ValidatedMinuteInputs
-    from pa_agent.research_backtest.simulation.inputs import validate_minute_inputs
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        ValidatedMinuteInputs,
+        validate_minute_inputs,
+    )
 
     result = validate_minute_inputs(
         has_positions=False,
@@ -136,3 +152,50 @@ def test_invalid_projection_does_not_fabricate_equity() -> None:
     assert result.path_result.path_state.value == "INVALID"
     assert result.equity_points == ()
     assert result.ledger_entries == ()
+
+
+def test_missing_held_symbol_bar_fails_in_data_gate() -> None:
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
+
+    result = validate_minute_inputs(
+        has_positions=True,
+        has_due_event=False,
+        held_symbols=("ETHUSDT",),
+        minute=MinuteInputSlice(60_000, (bar("BTCUSDT"),), (bar("BTCUSDT"),), (), ()),
+    )
+    assert result.reason == "TRADE_GAP_AFFECTS_POSITION:ETHUSDT"
+
+
+def test_missing_funding_record_is_checked_per_held_symbol() -> None:
+    from pa_agent.research_backtest.simulation.funding import FundingRecord
+    from pa_agent.research_backtest.simulation.inputs import (
+        MinuteInputSlice,
+        validate_minute_inputs,
+    )
+
+    record = FundingRecord(
+        "btc-funding",
+        "BTCUSDT",
+        60_000,
+        Decimal("0.0001"),
+        Decimal("100"),
+        "b" * 64,
+    )
+    result = validate_minute_inputs(
+        has_positions=True,
+        has_due_event=False,
+        held_symbols=("BTCUSDT", "ETHUSDT"),
+        minute=MinuteInputSlice(
+            60_000,
+            (bar("BTCUSDT"), bar("ETHUSDT")),
+            (bar("BTCUSDT"), bar("ETHUSDT")),
+            (record,),
+            (),
+            funding_expected=True,
+            funding_expected_symbols=("BTCUSDT", "ETHUSDT"),
+        ),
+    )
+    assert result.reason == "FUNDING_GAP_AFFECTS_POSITION:ETHUSDT"

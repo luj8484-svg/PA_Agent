@@ -16,8 +16,7 @@ class FakeIntent:
 
 
 def test_entry_planner_receives_target_minute_current_state() -> None:
-    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
-    from pa_agent.research_backtest.simulation.planning import plan_due_entries
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies, plan_due_entries
 
     calls: list[object] = []
     state = object()
@@ -37,16 +36,18 @@ def test_entry_planner_receives_target_minute_current_state() -> None:
 
 
 def test_future_entry_intent_is_not_planned() -> None:
-    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
-    from pa_agent.research_backtest.simulation.planning import plan_due_entries
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies, plan_due_entries
 
-    deps = PlannerDependencies(lambda *_: pytest.fail("future intent used"), lambda x: x, None, None)
-    assert plan_due_entries(object(), (FakeIntent("future", 120_000),), 60_000, object(), deps) == ()
+    deps = PlannerDependencies(
+        lambda *_: pytest.fail("future intent used"), lambda x: x, None, None
+    )
+    assert (
+        plan_due_entries(object(), (FakeIntent("future", 120_000),), 60_000, object(), deps) == ()
+    )
 
 
 def test_funding_and_exit_state_changes_are_visible_to_entry_planner() -> None:
-    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
-    from pa_agent.research_backtest.simulation.planning import plan_due_entries
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies, plan_due_entries
 
     @dataclass(frozen=True)
     class State:
@@ -71,8 +72,7 @@ def test_funding_and_exit_state_changes_are_visible_to_entry_planner() -> None:
 
 
 def test_exit_planner_receives_current_position_snapshot() -> None:
-    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
-    from pa_agent.research_backtest.simulation.planning import plan_due_exits
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies, plan_due_exits
 
     seen: list[object] = []
     deps = PlannerDependencies(
@@ -81,9 +81,7 @@ def test_exit_planner_receives_current_position_snapshot() -> None:
         lambda state, intent, evidence: seen.append((state, intent, evidence)) or intent,
         lambda value: ("exit-plan", value.intent_id),
     )
-    result = plan_due_exits(
-        object(), (FakeIntent("exit", 60_000),), 60_000, object(), deps
-    )
+    result = plan_due_exits(object(), (FakeIntent("exit", 60_000),), 60_000, object(), deps)
     assert result == (("exit-plan", "exit"),)
     assert len(seen) == 1
 
@@ -134,8 +132,7 @@ def test_time_exit_only_at_origin_plan_maximum() -> None:
 
 
 def test_trend_exit_requires_closed_evidence_and_loss_of_direction() -> None:
-    from pa_agent.research_backtest.simulation.planning import TrendEvidence
-    from pa_agent.research_backtest.simulation.planning import scheduled_exit_reasons
+    from pa_agent.research_backtest.simulation.planning import TrendEvidence, scheduled_exit_reasons
 
     bull = TrendEvidence(119_999, TrendState.BULL, True, "a" * 64)
     neutral = replace(bull, trend_state=TrendState.NEUTRAL)
@@ -149,8 +146,7 @@ def test_trend_exit_requires_closed_evidence_and_loss_of_direction() -> None:
 
 
 def test_short_trend_exit_is_symmetric() -> None:
-    from pa_agent.research_backtest.simulation.planning import TrendEvidence
-    from pa_agent.research_backtest.simulation.planning import scheduled_exit_reasons
+    from pa_agent.research_backtest.simulation.planning import TrendEvidence, scheduled_exit_reasons
 
     short = replace(pos(), side=Side.SHORT)
     bear = TrendEvidence(119_999, TrendState.BEAR, True, "a" * 64)
@@ -166,7 +162,10 @@ def test_scheduled_exit_reason_priority_is_closed() -> None:
 
     all_reasons = tuple(ScheduledExitReason)
     assert choose_scheduled_reason(all_reasons) is ScheduledExitReason.HALT_EXIT
-    assert choose_scheduled_reason((ScheduledExitReason.TIME_EXIT, ScheduledExitReason.TREND_EXIT)) is ScheduledExitReason.TREND_EXIT
+    assert (
+        choose_scheduled_reason((ScheduledExitReason.TIME_EXIT, ScheduledExitReason.TREND_EXIT))
+        is ScheduledExitReason.TREND_EXIT
+    )
 
 
 def test_experiment_end_condition_occurs_before_target_open() -> None:
@@ -189,3 +188,44 @@ def test_missing_expected_trend_evidence_is_invalid() -> None:
     )
     assert isinstance(result, PathInvalidEvent)
     assert result.reason == "TREND_EVIDENCE_UNAVAILABLE"
+
+
+def test_production_candidate_factory_calls_existing_2b_intent_function() -> None:
+    from pa_agent.research_backtest.domain.config import execution_time_config
+    from pa_agent.research_backtest.domain.enums import ResearchStage
+    from pa_agent.research_backtest.domain.intents import EntryIntent
+    from pa_agent.research_backtest.simulation.planning import make_candidate_intent_factory
+    from tests.research_backtest.execution.fixtures.entry_plan_case import complete_entry_inputs
+
+    candidate = complete_entry_inputs().candidate
+    factory = make_candidate_intent_factory(
+        execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1),
+        computational_experiment_id="f" * 64,
+        stage=ResearchStage.BACKTEST,
+        code_commit="c" * 40,
+        dependency_lock_hash="b" * 64,
+    )
+    assert isinstance(factory(candidate), EntryIntent)
+
+
+def test_production_exit_factory_calls_existing_2b_intent_function() -> None:
+    from pa_agent.research_backtest.domain.config import execution_time_config
+    from pa_agent.research_backtest.domain.enums import ScheduledExitReason
+    from pa_agent.research_backtest.domain.intents import ExitIntent
+    from pa_agent.research_backtest.simulation.planning import make_scheduled_exit_intent_factory
+
+    factory = make_scheduled_exit_intent_factory(
+        execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1),
+        computational_experiment_id="e" * 64,
+        code_commit="c" * 40,
+        dependency_lock_hash="b" * 64,
+    )
+    result = factory(
+        pos(),
+        (ScheduledExitReason.TREND_EXIT, ScheduledExitReason.TIME_EXIT),
+        119_999,
+        object(),
+    )
+    assert isinstance(result, ExitIntent)
+    assert result.scheduled_exit_reason is ScheduledExitReason.TREND_EXIT
+    assert result.target_execution_time_utc_ms == 180_000

@@ -54,6 +54,8 @@ class MinuteInputSlice:
     funding_expected: bool = False
     index_expected: bool = False
     index_present: bool = False
+    funding_expected_symbols: tuple[str, ...] = ()
+    trend_evidence: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -69,6 +71,11 @@ class MinuteInputSlice:
             symbols = tuple(bar.symbol for bar in bars)
             if symbols != tuple(sorted(set(symbols))):
                 raise ValueError("bar symbols must be unique and sorted")
+        if self.funding_expected_symbols != tuple(sorted(set(self.funding_expected_symbols))):
+            raise ValueError("expected funding symbols must be unique and sorted")
+        trend_symbols = tuple(getattr(item, "symbol", None) for item in self.trend_evidence)
+        if trend_symbols != tuple(sorted(set(trend_symbols))):
+            raise ValueError("trend evidence symbols must be unique and sorted")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +108,37 @@ class SimulationInputs:
 
 
 def validate_minute_inputs(
-    *, has_positions: bool, has_due_event: bool, minute: MinuteInputSlice
+    *,
+    has_positions: bool,
+    has_due_event: bool,
+    minute: MinuteInputSlice,
+    held_symbols: tuple[str, ...] = (),
+    due_symbols: tuple[str, ...] = (),
+    trend_evidence_expected_symbols: tuple[str, ...] = (),
 ) -> ValidatedMinuteInputs | PathInvalidEvent:
     all_bars = minute.trade_bars + minute.mark_bars
     if any(not bar.is_closed for bar in all_bars):
         return PathInvalidEvent(minute.minute_open_utc_ms, "UNCLOSED_BAR")
+    if any(
+        getattr(record, "funding_time_utc_ms", None) != minute.minute_open_utc_ms
+        for record in minute.funding_records
+    ):
+        return PathInvalidEvent(minute.minute_open_utc_ms, "FUNDING_RECORD_TIME_MISMATCH")
     audit: list[str] = []
+    trade_symbols = {bar.symbol for bar in minute.trade_bars}
+    mark_symbols = {bar.symbol for bar in minute.mark_bars}
+    for symbol in sorted(set(held_symbols)):
+        if symbol not in trade_symbols:
+            return PathInvalidEvent(
+                minute.minute_open_utc_ms, f"TRADE_GAP_AFFECTS_POSITION:{symbol}"
+            )
+        if symbol not in mark_symbols:
+            return PathInvalidEvent(
+                minute.minute_open_utc_ms, f"MARK_GAP_AFFECTS_POSITION:{symbol}"
+            )
+    for symbol in sorted(set(due_symbols)):
+        if symbol not in trade_symbols:
+            return PathInvalidEvent(minute.minute_open_utc_ms, f"TRADE_GAP_AFFECTS_EVENT:{symbol}")
     if not minute.trade_bars:
         if has_positions:
             return PathInvalidEvent(minute.minute_open_utc_ms, "TRADE_GAP_AFFECTS_POSITION")
@@ -119,6 +151,27 @@ def validate_minute_inputs(
         audit.append("MARK_GAP")
     if minute.funding_expected and has_positions and not minute.funding_records:
         return PathInvalidEvent(minute.minute_open_utc_ms, "FUNDING_GAP_AFFECTS_POSITION")
+    if minute.funding_expected_symbols:
+        observed_funding_symbols = {
+            getattr(record, "symbol", None) for record in minute.funding_records
+        }
+        for symbol in minute.funding_expected_symbols:
+            if symbol in held_symbols and symbol not in observed_funding_symbols:
+                return PathInvalidEvent(
+                    minute.minute_open_utc_ms,
+                    f"FUNDING_GAP_AFFECTS_POSITION:{symbol}",
+                )
     if minute.index_expected and not minute.index_present:
         audit.append("INDEX_GAP")
+    observed_trend_symbols = {
+        getattr(item, "symbol", None)
+        for item in minute.trend_evidence
+        if getattr(item, "is_closed", False)
+    }
+    for symbol in trend_evidence_expected_symbols:
+        if symbol not in observed_trend_symbols:
+            return PathInvalidEvent(
+                minute.minute_open_utc_ms,
+                f"TREND_EVIDENCE_UNAVAILABLE:{symbol}",
+            )
     return ValidatedMinuteInputs(minute, tuple(audit))

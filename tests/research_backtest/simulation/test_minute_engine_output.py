@@ -1,0 +1,418 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from decimal import Decimal
+from types import SimpleNamespace
+
+from tests.research_backtest.simulation.test_domain_identity_scope import config_payload
+from tests.research_backtest.simulation.test_funding_liquidation import maintenance, position
+from tests.research_backtest.simulation.test_inputs_and_invalid import bar
+
+
+def config(**changes):
+    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+
+    payload = config_payload() | changes
+    return make_simulation_config(**payload)
+
+
+def minute(open_time: int = 60_000):
+    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
+
+    trade = replace(bar(), open_time_utc_ms=open_time, close_time_utc_ms=open_time + 59_999)
+    mark = replace(bar(), open_time_utc_ms=open_time, close_time_utc_ms=open_time + 59_999)
+    return MinuteInputSlice(open_time, (trade,), (mark,), (), ())
+
+
+def dependencies(**changes):
+    from pa_agent.research_backtest.simulation.engine import EngineDependencies
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    defaults = {
+        "planners": PlannerDependencies(None, None, None, None),
+        "entry_intent_factory": None,
+        "exit_intent_factory": None,
+        "planning_evidence_factory": lambda *_: None,
+        "maintenance_evidence_factory": lambda *_: maintenance(),
+        "execution_cost_factory": lambda *_: SimpleNamespace(
+            slippage_rate=Decimal("0.001"),
+            fee_rate=Decimal("0.0005"),
+            tick_size=Decimal("0.1"),
+        ),
+    }
+    return EngineDependencies(**(defaults | changes))
+
+
+def test_valid_empty_minute_executes_all_14_stages() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.versions import EVENT_STAGES
+
+    result = process_minute(initial_engine_state(config()), minute(), config(), dependencies())
+    assert tuple(event.stage for event in result.events) == EVENT_STAGES
+    assert len(result.equity_points) == 1
+    assert result.equity_points[0].equity == Decimal("10000")
+
+
+def test_invalid_mark_gap_stops_without_equity() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
+
+    state = replace(initial_engine_state(config()), positions=(position(),))
+    result = process_minute(
+        state,
+        MinuteInputSlice(60_000, (bar(),), (), (), ()),
+        config(),
+        dependencies(),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert tuple(event.stage for event in result.events) == (
+        "LOAD_CLOSED_INPUTS",
+        "FAIL_CLOSED_DATA_GATE",
+    )
+    assert result.equity_points == ()
+
+
+def test_funding_is_applied_before_open_gate() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.funding import FundingRecord
+
+    pos = position()
+    state = replace(
+        initial_engine_state(config()),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    record = FundingRecord("f1", "BTCUSDT", 60_000, Decimal("0.01"), Decimal("100"), "a" * 64)
+    value = minute()
+    calm_trade = replace(value.trade_bars[0], low=Decimal("95"), high=Decimal("105"))
+    calm_mark = replace(value.mark_bars[0], low=Decimal("95"), high=Decimal("105"))
+    value = replace(
+        value,
+        trade_bars=(calm_trade,),
+        mark_bars=(calm_mark,),
+        funding_records=(record,),
+        funding_expected=True,
+    )
+    result = process_minute(state, value, config(), dependencies())
+    assert result.state.wallet_balance == Decimal("9998")
+    assert result.state.locked_funding_reserve == Decimal("4")
+    funding_index = next(i for i, event in enumerate(result.events) if event.kind == "FUNDING")
+    open_index = next(
+        i for i, event in enumerate(result.events) if event.stage == "OPEN_GAP_PROTECTIVE_GATE"
+    )
+    assert funding_index < open_index
+
+
+def test_open_gap_liquidation_cancels_due_scheduled_exit() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+
+    pos = replace(
+        position(),
+        initial_margin=Decimal("2"),
+        isolated_margin_balance=Decimal("2"),
+        stop_trigger_price=Decimal("105"),
+        take_profit_trigger_price=Decimal("95"),
+    )
+    due_exit = SimpleNamespace(
+        intent_id="exit-intent",
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        target_execution_time_utc_ms=60_000,
+    )
+    state = replace(
+        initial_engine_state(config()),
+        positions=(pos,),
+        pending_exit_intents=(due_exit,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    calls: list[object] = []
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    deps = dependencies(
+        planners=PlannerDependencies(
+            None,
+            None,
+            lambda *_: calls.append("scheduled") or object(),
+            lambda value: value,
+        )
+    )
+    result = process_minute(state, minute(), config(), deps)
+    assert result.state.positions == ()
+    assert calls == []
+    protective = [fill for fill in result.fills if fill.selected_exit_reason is None]
+    assert len(protective) == 1
+    assert any(event.kind == "SCHEDULED_EXIT_CANCELLED" for event in result.events)
+
+
+def test_halt_does_not_end_processing_and_separates_times() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.halt import apply_halt
+
+    halted = apply_halt(initial_engine_state(config()), 60_000, "DRAWDOWN")
+    result = process_minute(
+        halted, minute(120_000), config(simulation_end_exit_open_utc_ms=180_000), dependencies()
+    )
+    assert result.state.path_state.value == "HALTED"
+    assert result.state.halt_trigger_time_utc_ms == 60_000
+    assert result.state.final_processed_time_utc_ms == 120_000
+    assert len(result.equity_points) == 1
+
+
+def test_complete_run_is_deterministic_and_has_at_most_two_paths() -> None:
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.identity import canonical_2c_sha256
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+
+    inputs = SimulationInputs((minute(0), minute(60_000), minute(120_000)), (), ())
+    cfg = config(simulation_end_exit_open_utc_ms=120_000)
+    first = run_simulation(inputs, cfg, dependencies())
+    second = run_simulation(inputs, cfg, dependencies())
+    assert len(first.paths) == 2
+    assert canonical_2c_sha256(first) == canonical_2c_sha256(second)
+    assert all(len(path.minute_results) == 3 for path in first.paths)
+
+
+def test_experiment_end_blocks_entry_planning() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.planning import PlannerDependencies
+
+    due_entry = SimpleNamespace(
+        intent_id="entry", symbol="BTCUSDT", target_execution_time_utc_ms=120_000
+    )
+    state = replace(initial_engine_state(config()), pending_entry_intents=(due_entry,))
+    deps = dependencies(
+        planners=PlannerDependencies(
+            lambda *_: (_ for _ in ()).throw(AssertionError("entry planned after end")),
+            lambda x: x,
+            None,
+            None,
+        )
+    )
+    result = process_minute(state, minute(120_000), config(), deps)
+    assert any(event.kind == "EXPERIMENT_END_ENTRY_CANCELLED" for event in result.events)
+
+
+def test_canonical_manifest_is_acquisition_independent() -> None:
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from pa_agent.research_backtest.simulation.output import output_manifest
+
+    result = run_simulation(
+        SimulationInputs((minute(0), minute(60_000), minute(120_000)), (), ()),
+        config(),
+        dependencies(),
+    )
+    first = output_manifest(result)
+    second = output_manifest(result)
+    assert first == second
+    assert not hasattr(first, "acquisition_manifest_hash")
+
+
+def test_future_intent_does_not_turn_flat_gap_into_invalid() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
+
+    future = SimpleNamespace(
+        intent_id="future", symbol="BTCUSDT", target_execution_time_utc_ms=120_000
+    )
+    state = replace(initial_engine_state(config()), pending_entry_intents=(future,))
+    result = process_minute(
+        state,
+        MinuteInputSlice(60_000, (), (), (), ()),
+        config(),
+        dependencies(),
+    )
+    assert result.state.path_state.value == "VALID"
+    assert len(result.equity_points) == 1
+
+
+def test_missing_maintenance_factory_result_is_invalid_not_exception() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+
+    pos = position()
+    state = replace(
+        initial_engine_state(config()),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    result = process_minute(
+        state,
+        minute(),
+        config(),
+        dependencies(maintenance_evidence_factory=lambda *_: None),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert result.planning_outputs[-1].reason == "MAINTENANCE_EVIDENCE_UNAVAILABLE"
+
+
+def test_missing_trend_evidence_at_closed_4h_boundary_is_invalid() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
+
+    pos = position()
+    state = replace(
+        initial_engine_state(config(simulation_end_exit_open_utc_ms=28_800_000)),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    trade = replace(bar(), open_time_utc_ms=14_340_000, close_time_utc_ms=14_399_999)
+    mark = replace(bar(), open_time_utc_ms=14_340_000, close_time_utc_ms=14_399_999)
+    result = process_minute(
+        state,
+        MinuteInputSlice(14_340_000, (trade,), (mark,), (), ()),
+        config(simulation_end_exit_open_utc_ms=28_800_000),
+        dependencies(),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert result.equity_points == ()
+    assert result.planning_outputs[-1].reason == "TREND_EVIDENCE_UNAVAILABLE:BTCUSDT"
+
+
+def test_closed_4h_trend_loss_creates_scheduled_exit_intent() -> None:
+    from pa_agent.research_backtest.domain.enums import TrendState
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
+    from pa_agent.research_backtest.simulation.planning import TrendEvidence
+
+    pos = replace(position(), maximum_exit_time_utc_ms=99_999_999)
+    state = replace(
+        initial_engine_state(config(simulation_end_exit_open_utc_ms=28_800_000)),
+        positions=(pos,),
+        locked_initial_margin=pos.initial_margin,
+        locked_fee_reserve=pos.remaining_fee_reserve,
+        locked_funding_reserve=pos.remaining_funding_reserve,
+    )
+    calm = replace(
+        bar(),
+        open_time_utc_ms=14_340_000,
+        close_time_utc_ms=14_399_999,
+        low=Decimal("95"),
+        high=Decimal("105"),
+    )
+    trend = TrendEvidence(
+        14_399_999,
+        TrendState.NEUTRAL,
+        True,
+        "d" * 64,
+        symbol="BTCUSDT",
+    )
+    made: list[tuple[object, ...]] = []
+
+    def exit_factory(actual_position, reasons, event_time, _state):
+        made.append(reasons)
+        return SimpleNamespace(
+            intent_id="trend-exit",
+            position_id=actual_position.position_id,
+            symbol=actual_position.symbol,
+            target_execution_time_utc_ms=event_time + 1,
+        )
+
+    mmr = replace(maintenance(), effective_end_utc_ms=30_000_000)
+    result = process_minute(
+        state,
+        MinuteInputSlice(
+            14_340_000,
+            (calm,),
+            (calm,),
+            (),
+            (),
+            trend_evidence=(trend,),
+        ),
+        config(simulation_end_exit_open_utc_ms=28_800_000),
+        dependencies(
+            exit_intent_factory=exit_factory,
+            maintenance_evidence_factory=lambda *_: mmr,
+        ),
+    )
+    assert made[0][0].value == "TREND_EXIT"
+    assert result.state.pending_exit_intents[0].intent_id == "trend-exit"
+    assert result.planning_outputs[0].intent_id == "trend-exit"
+
+
+def test_funding_record_from_another_minute_is_invalid() -> None:
+    from pa_agent.research_backtest.simulation.domain import initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import process_minute
+    from pa_agent.research_backtest.simulation.funding import FundingRecord
+
+    record = FundingRecord(
+        "wrong-minute",
+        "BTCUSDT",
+        120_000,
+        Decimal("0.0001"),
+        Decimal("100"),
+        "a" * 64,
+    )
+    result = process_minute(
+        initial_engine_state(config()),
+        replace(minute(), funding_records=(record,)),
+        config(),
+        dependencies(),
+    )
+    assert result.state.path_state.value == "INVALID"
+    assert result.planning_outputs[-1].reason == "FUNDING_RECORD_TIME_MISMATCH"
+
+
+def test_candidate_intent_is_preserved_in_run_output() -> None:
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+
+    candidate = SimpleNamespace(candidate_id="candidate", decision_time_utc_ms=0)
+    intent = SimpleNamespace(
+        intent_id="intent",
+        symbol="BTCUSDT",
+        target_execution_time_utc_ms=120_000,
+    )
+    result = run_simulation(
+        SimulationInputs((minute(60_000),), (candidate,), ()),
+        config(simulation_start_utc_ms=60_000, simulation_end_exit_open_utc_ms=60_000),
+        dependencies(entry_intent_factory=lambda _: intent),
+    )
+    assert result.paths[0].minute_results[0].planning_outputs[0] is intent
+
+
+def test_canonical_output_writer_is_atomic_and_repeatable(tmp_path) -> None:
+    from pa_agent.research_backtest.simulation.engine import run_simulation
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from pa_agent.research_backtest.simulation.output import write_canonical_result
+
+    result = run_simulation(
+        SimulationInputs((minute(60_000),), (), ()),
+        config(simulation_start_utc_ms=60_000, simulation_end_exit_open_utc_ms=60_000),
+        dependencies(),
+    )
+    first = write_canonical_result(result, tmp_path)
+    first_bytes = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    second = write_canonical_result(result, tmp_path)
+    second_bytes = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+
+    assert first == second
+    assert first_bytes == second_bytes
+    assert {name for name, _ in first.file_hashes} == {
+        "equity.jsonl",
+        "events.jsonl",
+        "fills.jsonl",
+        "ledger.jsonl",
+        "path_results.jsonl",
+        "planning.jsonl",
+        "positions.jsonl",
+        "trades.jsonl",
+    }
+    assert not any(path.suffix == ".tmp" for path in tmp_path.iterdir())

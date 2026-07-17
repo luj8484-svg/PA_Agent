@@ -53,8 +53,7 @@ def funding(rate: str):
     ],
 )
 def test_funding_sign_quadrants(side: Side, rate: str, expected: str) -> None:
-    from pa_agent.research_backtest.simulation.funding import FundingSettlement
-    from pa_agent.research_backtest.simulation.funding import settle_funding
+    from pa_agent.research_backtest.simulation.funding import FundingSettlement, settle_funding
 
     result = settle_funding(position(side), funding(rate))
     assert isinstance(result, FundingSettlement)
@@ -63,8 +62,10 @@ def test_funding_sign_quadrants(side: Side, rate: str, expected: str) -> None:
 
 
 def test_funding_income_does_not_increase_reserve() -> None:
-    from pa_agent.research_backtest.simulation.funding import apply_funding_to_position
-    from pa_agent.research_backtest.simulation.funding import settle_funding
+    from pa_agent.research_backtest.simulation.funding import (
+        apply_funding_to_position,
+        settle_funding,
+    )
 
     updated = apply_funding_to_position(position(), settle_funding(position(), funding("-0.01")))
     assert updated.remaining_funding_reserve == Decimal("4")
@@ -72,8 +73,7 @@ def test_funding_income_does_not_increase_reserve() -> None:
 
 
 def test_funding_payment_over_remaining_reserve_is_invalid() -> None:
-    from pa_agent.research_backtest.simulation.funding import FundingReserveExceeded
-    from pa_agent.research_backtest.simulation.funding import settle_funding
+    from pa_agent.research_backtest.simulation.funding import FundingReserveExceeded, settle_funding
 
     tiny = replace(position(), remaining_funding_reserve=Decimal("1"))
     result = settle_funding(tiny, funding("0.01"))
@@ -132,8 +132,10 @@ def test_maintenance_expired_is_invalid() -> None:
 
 
 def test_fees_and_funding_never_change_isolated_margin() -> None:
-    from pa_agent.research_backtest.simulation.funding import apply_funding_to_position
-    from pa_agent.research_backtest.simulation.funding import settle_funding
+    from pa_agent.research_backtest.simulation.funding import (
+        apply_funding_to_position,
+        settle_funding,
+    )
 
     original = position()
     updated = apply_funding_to_position(original, settle_funding(original, funding("0.01")))

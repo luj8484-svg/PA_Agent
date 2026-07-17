@@ -26,7 +26,9 @@ def canonical_2c_sha256(value: object) -> str:
 
 
 def simulation_run_id(identity: SimulationInputIdentity, config: SimulationConfig) -> str:
-    return "simrun_" + canonical_sha256(
-        {"input_identity": identity, "simulation_config_hash": config.config_content_hash}
-    )[:32]
-
+    return (
+        "simrun_"
+        + canonical_sha256(
+            {"input_identity": identity, "simulation_config_hash": config.config_content_hash}
+        )[:32]
+    )

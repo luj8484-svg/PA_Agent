@@ -167,9 +167,14 @@ class EngineState:
     halt_reason: str | None
     flat_after_halt_time_utc_ms: int | None
     final_processed_time_utc_ms: int | None
+    pending_entry_intents: tuple[object, ...] = ()
+    pending_exit_intents: tuple[object, ...] = ()
+    seen_candidate_ids: tuple[str, ...] = ()
 
 
-def initial_engine_state(config: SimulationConfig, path_kind: PathKind = PathKind.BASELINE) -> EngineState:
+def initial_engine_state(
+    config: SimulationConfig, path_kind: PathKind = PathKind.BASELINE
+) -> EngineState:
     zero = Decimal("0")
     return EngineState(
         path_kind=path_kind,

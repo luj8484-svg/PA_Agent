@@ -22,10 +22,12 @@ def resolve_ambiguity(
     if not candidates:
         raise ValueError("ambiguity candidate set is empty")
     if path_kind is PathKind.BASELINE:
+
         def key(item: TriggerCandidate) -> tuple[Decimal, int]:
             distance = abs(item.trigger_price - item.open_price) / item.open_price
             return distance, _PRIORITY[item.kind]
     elif path_kind is PathKind.CONSERVATIVE:
+
         def key(item: TriggerCandidate) -> tuple[Decimal, int]:
             return item.minute_end_equity, _PRIORITY[item.kind]
     else:
@@ -48,7 +50,5 @@ def resolve_all_paths(
     if set(unique) != {PathKind.BASELINE, PathKind.CONSERVATIVE} or len(unique) != 2:
         raise ValueError("active path set must contain exactly two stable identities")
     return tuple(
-        ResolvedPath(kind, resolve_ambiguity(kind, parent_state, candidates))
-        for kind in unique
+        ResolvedPath(kind, resolve_ambiguity(kind, parent_state, candidates)) for kind in unique
     )
-

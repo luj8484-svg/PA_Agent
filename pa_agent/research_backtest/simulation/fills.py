@@ -62,16 +62,16 @@ def _fill(payload: dict[str, object]) -> FillEvent:
 def make_entry_fill(plan: object) -> FillEvent:
     return _fill(
         {
-            "plan_id": getattr(plan, "plan_id"),
-            "candidate_id": getattr(plan, "candidate_id"),
-            "position_id": f"position:{getattr(plan, 'plan_id')}",
-            "symbol": getattr(plan, "symbol"),
-            "side": getattr(plan, "side"),
+            "plan_id": plan.plan_id,
+            "candidate_id": plan.candidate_id,
+            "position_id": f"position:{plan.plan_id}",
+            "symbol": plan.symbol,
+            "side": plan.side,
             "action": FillAction.ENTRY,
-            "event_time_utc_ms": getattr(plan, "target_execution_time_utc_ms"),
-            "quantity": getattr(plan, "quantity"),
-            "fill_price": getattr(plan, "expected_entry_fill_price"),
-            "fee": getattr(plan, "entry_fee"),
+            "event_time_utc_ms": plan.target_execution_time_utc_ms,
+            "quantity": plan.quantity,
+            "fill_price": plan.expected_entry_fill_price,
+            "fee": plan.entry_fee,
             "selected_exit_reason": None,
             "matched_exit_reasons": (),
         }
@@ -87,18 +87,50 @@ def make_scheduled_exit_fill(
         raise ValueError("selected scheduled exit reason was not matched")
     return _fill(
         {
-            "plan_id": getattr(plan, "plan_id"),
-            "candidate_id": getattr(plan, "origin_candidate_id"),
-            "position_id": getattr(plan, "position_id"),
-            "symbol": getattr(plan, "symbol"),
-            "side": getattr(plan, "position_side"),
+            "plan_id": plan.plan_id,
+            "candidate_id": plan.origin_candidate_id,
+            "position_id": plan.position_id,
+            "symbol": plan.symbol,
+            "side": plan.position_side,
             "action": FillAction.EXIT,
-            "event_time_utc_ms": getattr(plan, "target_execution_time_utc_ms"),
-            "quantity": getattr(plan, "quantity"),
-            "fill_price": getattr(plan, "expected_exit_fill_price"),
-            "fee": getattr(plan, "expected_exit_fee"),
+            "event_time_utc_ms": plan.target_execution_time_utc_ms,
+            "quantity": plan.quantity,
+            "fill_price": plan.expected_exit_fill_price,
+            "fee": plan.expected_exit_fee,
             "selected_exit_reason": selected_reason,
             "matched_exit_reasons": matched_reasons,
+        }
+    )
+
+
+def make_protective_exit_fill(
+    position: IsolatedPosition,
+    candidate: object,
+    event_time_utc_ms: int,
+    *,
+    slippage_rate: Decimal,
+    fee_rate: Decimal,
+    tick_size: Decimal,
+) -> FillEvent:
+    from pa_agent.research_backtest.simulation.triggers import protective_fill_price
+
+    price = protective_fill_price(position.side, candidate, slippage_rate, tick_size)
+    fee = position.quantity * price * fee_rate
+    trigger_kind = candidate.kind.value
+    return _fill(
+        {
+            "plan_id": f"protective:{position.position_id}:{event_time_utc_ms}:{trigger_kind}",
+            "candidate_id": position.origin_candidate_id,
+            "position_id": position.position_id,
+            "symbol": position.symbol,
+            "side": position.side,
+            "action": FillAction.EXIT,
+            "event_time_utc_ms": event_time_utc_ms,
+            "quantity": position.quantity,
+            "fill_price": price,
+            "fee": fee,
+            "selected_exit_reason": None,
+            "matched_exit_reasons": (),
         }
     )
 
@@ -132,7 +164,7 @@ def apply_entry_fill(
         raise ValueError("entry Fill does not match position origin")
     if fill.plan_id in state.consumed_plan_ids:
         raise ValueError("entry plan already consumed")
-    if any(getattr(item, "symbol") == position.symbol for item in state.positions):
+    if any(item.symbol == position.symbol for item in state.positions):
         raise ValueError("existing position violates one-way symbol constraint")
     entries = (
         _ledger(fill, "entry-fee", LedgerKind.ENTRY_FEE, wallet=-fill.fee),
@@ -198,7 +230,9 @@ def apply_exit_fill(
     reduced = reduce_ledger(state, entries)
     reduced = replace(
         reduced,
-        positions=tuple(item for item in state.positions if item.position_id != position.position_id),
+        positions=tuple(
+            item for item in state.positions if item.position_id != position.position_id
+        ),
         consumed_plan_ids=tuple(sorted(set((*state.consumed_plan_ids, fill.plan_id)))),
         consumed_close_ids=tuple(sorted((*state.consumed_close_ids, position.position_id))),
         unrealized_pnl=Decimal("0"),

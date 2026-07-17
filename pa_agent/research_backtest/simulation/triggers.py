@@ -231,4 +231,3 @@ def protective_fill_price(
         raw = candidate.reference_price * (1 + slippage_rate)
         units = (raw / tick_size).to_integral_value(rounding=ROUND_CEILING)
     return units * tick_size
-

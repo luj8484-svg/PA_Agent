@@ -61,9 +61,11 @@ class LiquidationReference:
 
 def estimated_liquidation(
     position: IsolatedPosition,
-    evidence: MaintenanceEvidence,
+    evidence: MaintenanceEvidence | None,
     event_time_utc_ms: int,
 ) -> LiquidationReference | PathInvalidEvent:
+    if evidence is None:
+        return PathInvalidEvent(event_time_utc_ms, "MAINTENANCE_EVIDENCE_UNAVAILABLE")
     notional = position.quantity * position.entry_price
     usable = (
         position.symbol == evidence.symbol

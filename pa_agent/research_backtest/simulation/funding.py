@@ -85,12 +85,7 @@ def apply_funding_to_position(
         raise ValueError("funding schedule has no remaining event")
     return replace(
         position,
-        remaining_funding_reserve=(
-            position.remaining_funding_reserve - settlement.reserve_release
-        ),
+        remaining_funding_reserve=(position.remaining_funding_reserve - settlement.reserve_release),
         remaining_funding_events=position.remaining_funding_events - 1,
-        funding_wallet_delta_sum=(
-            position.funding_wallet_delta_sum + settlement.wallet_delta
-        ),
+        funding_wallet_delta_sum=(position.funding_wallet_delta_sum + settlement.wallet_delta),
     )
-
