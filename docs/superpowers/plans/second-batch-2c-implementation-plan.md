@@ -4,13 +4,13 @@
 
 **Goal:** Build a deterministic UTC one-minute BTC/ETH historical simulation that creates 2B Plans from target-minute state, consumes successful Plans, and emits immutable execution/account/path facts.
 
-**Architecture:** A single-threaded pure reducer executes `MINUTE_EVENT_ORDER_V2`. Complete runs consume Candidates and evidence, not future-state Plan files. At each target minute the engine constructs 2B evidence and invokes the existing pure planners. Economic state changes only through Ledger reduction. Ambiguity is bounded to persistent BASELINE and CONSERVATIVE identities.
+**Architecture:** A single-threaded pure reducer executes `MINUTE_EVENT_ORDER_V2`. Complete runs consume Candidates and evidence, not future-state Plan files. At each target minute the engine constructs one shared account/evidence bundle and invokes the existing 2B Sizing→Batch→Scaling→Plan pure-function chain exactly once for all due BTC/ETH Intents. Economic state changes only through Ledger reduction. BASELINE and CONSERVATIVE exist from simulation start and remain exactly two stable identities.
 
 **Tech Stack:** Python 3.11, frozen slotted dataclasses, Decimal, pytest, Hypothesis, existing 2A/2B Canonical and planning utilities.
 
 ## Global constraints
 
-- Scope is exactly 60 Requirements, 23 Timeline Golden fixtures, and 34 red-team scenarios in the frozen package.
+- Scope is exactly 60 Requirements, 24 Timeline Golden fixtures, 24 Property Registry IDs mapped to 9 actual Property functions, and 34 red-team scenarios in the frozen package.
 - No GUI, LLM, API Key, authentication, HTTP/socket client, `create_order`, paper/live automation, 2D performance analytics, walk-forward, OOS, or parameter grid.
 - 2C calls but never copies or alters 2B planning formulas. Candidate/Intent/Plan Canonical bytes are immutable.
 - Complete run input contains Candidates/evidence/SimulationConfig; direct Plan injection exists only in isolated fixtures marked `LOCAL_PLAN_FIXTURE_ONLY`.
@@ -79,26 +79,26 @@ Interfaces:
 
 Interfaces:
 
-- `settle_funding(position, record, reserve_state) -> FundingEvent | PathInvalidEvent`
+- `settle_funding(position, record) -> FundingSettlement | FundingReserveExceeded`
 - `estimated_liquidation(position, maintenance) -> LiquidationReference | PathInvalidEvent`
 
-- [ ] Create independent Decimal sign, reserve-slice and LONG/SHORT liquidation references plus TL-14/TL-23.
-- [ ] RED-test funding boundary/idempotency, income, remaining release, reserve exceeded, maintenance validity and mandatory watermarks.
+- [ ] Create independent Decimal sign, reserve-slice and LONG/SHORT liquidation references plus TL-14/TL-24.
+- [ ] RED-test funding boundary/idempotency, income, remaining release, reserve exceeded pre-commit atomicity, maintenance validity and mandatory watermarks.
 - [ ] Implement `ESTIMATED_FIXED_ISOLATED_MARGIN_V1`; fee/funding never alter isolated margin.
 
 ## Task 5 — Integrate 2B Entry/Exit planning and Scheduled Exit lifecycle
 
 Interfaces:
 
-- `plan_due_entries(state, intents, minute_evidence) -> tuple[EntryExecutionPlan|ExecutionRejection,...]`
+- `plan_due_entry_batch(state, due_intents, minute_evidence, planner_dependencies) -> EntryBatchPlanningOutcome`
 - `discover_exit_conditions(state, closed_4h, config) -> tuple[ExitConditionSnapshot,...]`
 - `plan_due_exits(state, intents, minute_evidence) -> tuple[ExitExecutionPlan|ExecutionRejection,...]`
 
-- [ ] Build spy/reference adapters proving target-minute state is passed to existing 2B functions.
+- [ ] Build a production adapter proving all due BTC/ETH Intents share one AccountPlanningEvidenceBundle/Snapshot, TargetMinuteOpenSnapshot set, completeness snapshot, PortfolioPlanningBatch and PortfolioScalingResult.
 - [ ] RED-test RT-25: complete run rejects prefabricated Plan streams and Plans vary with funding/exits before planning.
 - [ ] RED-test TIME/TREND/HALT/EXPERIMENT_END source rules, target timing, missing trend evidence, reason priority and cancellation.
-- [ ] Implement adapters only; do not copy sizing, risk, fee, slippage or contract formulas.
-- [ ] Preserve every Plan/Rejection in outputs; critical exit-planning failure cannot silently become no trade.
+- [ ] Invoke existing 2B `position_sizing`, `scale_portfolio` and `build_entry_execution_plan`; do not copy sizing, risk, fee, slippage or contract formulas and do not redistribute after item rejection.
+- [ ] Preserve every sizing/batch/scaling/item/Plan/Rejection object. Post-plan cash/risk/evidence conflict is `ENTRY_BATCH_POST_PLAN_INVARIANT_VIOLATION`, PathInvalidEvent and all-or-none no-Fill; critical exit-planning failure cannot silently become no trade.
 
 ## Task 6 — Entry/Scheduled Fill and Position lifecycle
 
@@ -108,7 +108,7 @@ Interfaces:
 - `make_scheduled_exit_fill(plan, matched_reasons) -> FillEvent`
 - `apply_position_event(position, event) -> IsolatedPosition | ClosedPosition`
 
-- [ ] Create TL-01, TL-02, TL-05, TL-08, TL-20..22 using actual 2B planner outputs.
+- [ ] Create TL-01, TL-02, TL-05, TL-08, TL-20..23 using actual 2B planner outputs; TL-08 is BTC LONG + ETH SHORT through the real shared batch chain.
 - [ ] RED-test expected fill equality, once-only consumption, batch atomicity, one-way position, stable symbol order and experiment-end open.
 - [ ] Implement facts and immediately reduce required Ledger entries; no unclosed Fill state.
 
@@ -121,7 +121,7 @@ Interfaces:
 
 - [ ] Create TL-03,04,06,07,17..19 and independent formula references before production code.
 - [ ] RED-test source separation, `LIQ>STOP>TP>Scheduled` open priority, one-time slippage/tick quantization and one exit per position/minute.
-- [ ] RED-test 20 consecutive ambiguities: every minute active paths `<=2` and each path has one successor.
+- [ ] RED-test both paths exist from simulation start, economic outputs match before ambiguity, divergence begins no earlier than the first ambiguous minute, and 20 consecutive ambiguities keep exactly two paths with one successor each.
 - [ ] Implement policy selection without recursive fork; retain two identities even after state convergence.
 
 ## Task 8 — Minute engine, HALT, outputs, Timeline and final verification
@@ -132,10 +132,10 @@ Interfaces:
 - `run_simulation(inputs, config, dependencies) -> SimulationResult`
 - `write_canonical_result(result, directory) -> OutputManifest` (explicit offline output layer only).
 
-- [ ] Freeze all 23 expected Event sequences and a 60-Requirement bidirectional registry.
+- [ ] Freeze all 24 expected Event sequences and a 60-Requirement bidirectional registry; TL-23 HALT drain and TL-24 funding-reserve failure have distinct inputs/hashes.
 - [ ] RED-test all 14 order stages, open-exit exposure removal, intraminute conservative exposure, HALT drain, halt/final timestamps, terminal INVALID, byte replay and output identity.
 - [ ] Implement pure orchestration and deterministic output; do not add performance metrics.
-- [ ] Run all 34 red-team tests and report explicit business/property/timeline/trace counts separately.
+- [ ] Run all 34 red-team tests and separately report explicit business function count, Property function count, 24 Property IDs, parametrized pytest item count, 24 Timeline, 60 Requirements and 34 Red-Team entries.
 - [ ] Run research_cli/data/backtest suites, default full suite baseline comparison, registry validator, Ruff/format, diff check and compileall.
 - [ ] Run forbidden-capability scan proving no GUI/LLM/API Key/network/order/2D surface.
 - [ ] Create Draft PR and stop for source review; do not start 2D.
