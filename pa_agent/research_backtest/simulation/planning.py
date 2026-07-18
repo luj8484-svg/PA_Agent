@@ -184,6 +184,44 @@ class EntryBatchPostPlanInvariantError(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class ProductionEntryPlanningFailure:
+    execution_rejections: tuple[ExecutionRejection, ...]
+    plans: tuple[EntryExecutionPlan, ...] = ()
+
+    @property
+    def audit_objects(self) -> tuple[object, ...]:
+        return self.execution_rejections
+
+
+def _production_evidence_rejection(intent: object, error: object) -> ExecutionRejection:
+    from pa_agent.research_backtest.domain.rejections import (
+        exit_intent_subject_ref,
+        rejection_fact,
+    )
+    from pa_agent.research_backtest.planning.rejections import choose_rejection
+
+    subject = (
+        exit_intent_subject_ref(intent)
+        if hasattr(intent, "full_exit_quantity")
+        else entry_intent_subject_ref(intent)
+    )
+    return choose_rejection(
+        subject=subject,
+        event_time_utc_ms=intent.target_execution_time_utc_ms,
+        facts=(
+            rejection_fact(
+                error.reason,
+                observed_values=(("production_evidence_error", error.label),),
+            ),
+        ),
+        stage=error.stage,
+        relevant_version_hashes=(),
+        code_commit=error.code_commit,
+        dependency_lock_hash=error.dependency_lock_hash,
+    )
+
+
 def validate_entry_batch_post_plan(
     outcome: EntryBatchPlanningOutcome,
     *,
@@ -538,7 +576,14 @@ def plan_due_entry_batch(
         return None
     if dependencies.entry_inputs_factory is None or dependencies.entry_planner is None:
         raise ValueError("entry batch planner dependencies are unavailable")
-    batch_inputs = dependencies.entry_inputs_factory(state, due, evidence)
+    from pa_agent.research_backtest.simulation.evidence import ProductionEvidenceError
+
+    if isinstance(evidence, ProductionEvidenceError):
+        return ProductionEntryPlanningFailure((_production_evidence_rejection(due[0], evidence),))
+    try:
+        batch_inputs = dependencies.entry_inputs_factory(state, due, evidence)
+    except ProductionEvidenceError as error:
+        return ProductionEntryPlanningFailure((_production_evidence_rejection(due[0], error),))
     return dependencies.entry_planner(batch_inputs)
 
 
@@ -557,10 +602,20 @@ def plan_due_exits(
         return ()
     if dependencies.exit_inputs_factory is None or dependencies.exit_planner is None:
         raise ValueError("exit planner dependencies are unavailable")
-    return tuple(
-        dependencies.exit_planner(dependencies.exit_inputs_factory(state, intent, evidence))
-        for intent in due
-    )
+    from pa_agent.research_backtest.simulation.evidence import ProductionEvidenceError
+
+    outputs = []
+    for intent in due:
+        if isinstance(evidence, ProductionEvidenceError):
+            outputs.append(_production_evidence_rejection(intent, evidence))
+            continue
+        try:
+            inputs = dependencies.exit_inputs_factory(state, intent, evidence)
+        except ProductionEvidenceError as error:
+            outputs.append(_production_evidence_rejection(intent, error))
+            continue
+        outputs.append(dependencies.exit_planner(inputs))
+    return tuple(outputs)
 
 
 @dataclass(frozen=True, slots=True)

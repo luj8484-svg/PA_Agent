@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pa_agent.research_backtest.domain.base import require_sha256
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
 from pa_agent.research_backtest.domain.config import ExecutionTimeConfig
 from pa_agent.research_backtest.domain.enums import ResearchStage
@@ -62,6 +63,8 @@ def _validate_config(
     catalog: SimulationEvidenceCatalog,
     execution: ExecutionTimeConfig,
 ) -> None:
+    if catalog.stage is not ResearchStage.BACKTEST:
+        raise RunConfigurationMismatch("2C ProductionRunContext requires BACKTEST stage")
     if config.code_commit != catalog.code_commit:
         raise RunConfigurationMismatch("Config/Catalog code identity mismatch")
     if config.dependency_lock_hash != catalog.dependency_lock_hash:
@@ -89,6 +92,7 @@ def make_production_run_context(
     execution_time_config: ExecutionTimeConfig,
     computational_experiment_id: str,
 ) -> ProductionRunContext:
+    require_sha256(computational_experiment_id, "computational_experiment_id")
     _validate_config(config, evidence_catalog, execution_time_config)
     if inputs.candidates and not any(
         (
@@ -121,6 +125,7 @@ def make_production_run_context(
         two_a_identity_content_hash=two_a_hash,
         two_b_identity_content_hash=two_b_hash,
         two_c_identity_content_hash=two_c_hash,
+        computational_experiment_id=computational_experiment_id,
     )
     return ProductionRunContext(
         config=config,
@@ -152,6 +157,19 @@ def validate_production_run_context(
     )
     identity = context.input_identity
     catalog = context.evidence_catalog
+    require_sha256(context.computational_experiment_id, "computational_experiment_id")
+    expected_planner_hash = canonical_sha256(
+        {
+            "planner": "POSITION_SIZING_BATCH_SCALING_ENTRY_EXIT_V1",
+            "version": context.config.two_b_planner_version,
+            "execution_time_config_hash": context.execution_time_config.config_content_hash,
+            "catalog_id": catalog.catalog_id,
+            "catalog_content_hash": catalog.catalog_content_hash,
+        }
+    )
+    expected_two_a_hash = _identity_hash("2A", context.config.two_a_version, context.config)
+    expected_two_b_hash = _identity_hash("2B", context.config.two_b_planner_version, context.config)
+    expected_two_c_hash = _identity_hash("2C", context.config.two_c_engine_version, context.config)
     if (
         context.stage != catalog.stage
         or context.split_start_utc_ms != catalog.split_start_utc_ms
@@ -170,14 +188,19 @@ def validate_production_run_context(
     expected_pairs = (
         (identity.target_open_content_hash, canonical_sha256(catalog.target_opens)),
         (identity.watermark_content_hash, canonical_sha256(catalog.watermarks)),
+        (identity.computational_experiment_id, context.computational_experiment_id),
         (
             identity.execution_time_config_content_hash,
             context.execution_time_config.config_content_hash,
         ),
-        (identity.planner_identity_content_hash, context.planner_identity_content_hash),
-        (identity.two_a_identity_content_hash, context.two_a_identity_content_hash),
-        (identity.two_b_identity_content_hash, context.two_b_identity_content_hash),
-        (identity.two_c_identity_content_hash, context.two_c_identity_content_hash),
+        (context.planner_identity_content_hash, expected_planner_hash),
+        (identity.planner_identity_content_hash, expected_planner_hash),
+        (context.two_a_identity_content_hash, expected_two_a_hash),
+        (identity.two_a_identity_content_hash, expected_two_a_hash),
+        (context.two_b_identity_content_hash, expected_two_b_hash),
+        (identity.two_b_identity_content_hash, expected_two_b_hash),
+        (context.two_c_identity_content_hash, expected_two_c_hash),
+        (identity.two_c_identity_content_hash, expected_two_c_hash),
     )
     if any(actual != expected for actual, expected in expected_pairs):
         raise RunConfigurationMismatch("Run Context actual identity mismatch")
@@ -194,6 +217,7 @@ def validate_production_run_context(
                 two_a_identity_content_hash=context.two_a_identity_content_hash,
                 two_b_identity_content_hash=context.two_b_identity_content_hash,
                 two_c_identity_content_hash=context.two_c_identity_content_hash,
+                computational_experiment_id=context.computational_experiment_id,
             )
         except ValueError as exc:
             raise RunConfigurationMismatch(
@@ -246,6 +270,7 @@ def build_production_engine_dependencies(context: ProductionRunContext):
         evidence_catalog=catalog,
         catalog_id=catalog.catalog_id,
         catalog_content_hash=catalog.catalog_content_hash,
+        stage=context.stage,
     )
     validate_production_engine_dependencies(context, dependencies)
     return dependencies

@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -17,23 +18,38 @@ jobs:
         with:
           python-version: "3.12.13"
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Report frozen Python version
+        run: python --version
+
+      - name: Install editable development package
+        run: python -m pip install -e ".[dev]"
 
       - name: Validate isolated research runtime
         run: python -m pa_agent.research_cli validate-environment
 
-      - name: Run research test suites
-        run: |
-          pytest tests/research_cli -q
-          pytest tests/research_data -q
-          pytest tests/research_backtest -q
+      - name: Test research CLI
+        run: pytest tests/research_cli -q
+
+      - name: Test research data
+        run: pytest tests/research_data -q
+
+      - name: Test 2B execution planning
+        run: pytest tests/research_backtest/execution -q
+
+      - name: Test 2C simulation
+        run: pytest tests/research_backtest/simulation -q
+
+      - name: Test complete research backtest
+        run: pytest tests/research_backtest -q
 
       - name: Validate 2B test registry
         run: python scripts/validate_2b_test_registry.py
 
-      - name: Static checks
-        run: |
-          ruff check pa_agent/research_backtest tests/research_backtest
-          ruff format --check pa_agent/research_backtest tests/research_backtest
-          python -m compileall -q pa_agent
+      - name: Ruff check
+        run: ruff check pa_agent/research_backtest tests/research_backtest
+
+      - name: Ruff format check
+        run: ruff format --check pa_agent/research_backtest tests/research_backtest
+
+      - name: Compile research package
+        run: python -m compileall -q pa_agent

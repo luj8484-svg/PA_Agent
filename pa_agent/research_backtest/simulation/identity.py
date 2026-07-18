@@ -38,6 +38,7 @@ class SimulationInputIdentity:
     two_a_identity_content_hash: str
     two_b_identity_content_hash: str
     two_c_identity_content_hash: str
+    computational_experiment_id: str
 
     def __post_init__(self) -> None:
         if self.schema_version != SIMULATION_INPUT_IDENTITY_VERSION:
@@ -45,6 +46,7 @@ class SimulationInputIdentity:
         for name in self.__dataclass_fields__:
             if name.endswith("_hash"):
                 require_sha256(getattr(self, name), name)
+        require_sha256(self.computational_experiment_id, "computational_experiment_id")
         verify_formal_identity(
             self,
             id_field="input_identity_id",
@@ -73,6 +75,7 @@ def make_simulation_input_identity(
     two_b_identity_content_hash: str | None = None,
     two_c_identity_content_hash: str | None = None,
     simulation_inputs_content_hash: str | None = None,
+    computational_experiment_id: str | None = None,
 ) -> SimulationInputIdentity:
     components = {
         "trade_content_hash": trade_content_hash,
@@ -93,6 +96,7 @@ def make_simulation_input_identity(
         "two_a_identity_content_hash": two_a_identity_content_hash or canonical_sha256(None),
         "two_b_identity_content_hash": two_b_identity_content_hash or canonical_sha256(None),
         "two_c_identity_content_hash": two_c_identity_content_hash or canonical_sha256(None),
+        "computational_experiment_id": computational_experiment_id or canonical_sha256(None),
     }
     payload = {
         "schema_version": SIMULATION_INPUT_IDENTITY_VERSION,
@@ -117,6 +121,7 @@ def build_simulation_input_identity(
     two_a_identity_content_hash: str | None = None,
     two_b_identity_content_hash: str | None = None,
     two_c_identity_content_hash: str | None = None,
+    computational_experiment_id: str | None = None,
 ) -> SimulationInputIdentity:
     trade = tuple(bar for minute in inputs.minute_slices for bar in minute.trade_bars)
     mark = tuple(bar for minute in inputs.minute_slices for bar in minute.mark_bars)
@@ -148,6 +153,7 @@ def build_simulation_input_identity(
         two_a_identity_content_hash=two_a_identity_content_hash,
         two_b_identity_content_hash=two_b_identity_content_hash,
         two_c_identity_content_hash=two_c_identity_content_hash,
+        computational_experiment_id=computational_experiment_id,
     )
 
 
@@ -161,6 +167,7 @@ def verify_simulation_input_identity(
     two_a_identity_content_hash: str | None = None,
     two_b_identity_content_hash: str | None = None,
     two_c_identity_content_hash: str | None = None,
+    computational_experiment_id: str | None = None,
 ) -> None:
     expected = build_simulation_input_identity(
         inputs,
@@ -170,6 +177,7 @@ def verify_simulation_input_identity(
         two_a_identity_content_hash=two_a_identity_content_hash,
         two_b_identity_content_hash=two_b_identity_content_hash,
         two_c_identity_content_hash=two_c_identity_content_hash,
+        computational_experiment_id=computational_experiment_id,
     )
     if all(
         value is None
@@ -179,6 +187,7 @@ def verify_simulation_input_identity(
             two_a_identity_content_hash,
             two_b_identity_content_hash,
             two_c_identity_content_hash,
+            computational_experiment_id,
         )
     ):
         base_fields = (

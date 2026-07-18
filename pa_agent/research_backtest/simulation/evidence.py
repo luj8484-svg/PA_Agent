@@ -23,7 +23,12 @@ from pa_agent.research_backtest.domain.base import (
     verify_formal_identity,
 )
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
-from pa_agent.research_backtest.domain.enums import ExperimentState, ResearchStage, Side
+from pa_agent.research_backtest.domain.enums import (
+    ExecutionRejectionReason,
+    ExperimentState,
+    ResearchStage,
+    Side,
+)
 from pa_agent.research_backtest.planning.funding import count_funding_events
 from pa_agent.research_backtest.simulation.domain import EngineState, PathState, SimulationConfig
 from pa_agent.research_backtest.simulation.inputs import MinuteInputSlice
@@ -150,11 +155,53 @@ class PlanningEvidenceFromEngine:
     catalog: SimulationEvidenceCatalog
 
 
-def _one(values: tuple[object, ...], predicate, label: str) -> object:
-    matches = tuple(item for item in values if predicate(item))
-    if len(matches) != 1:
-        raise ValueError(f"{label} evidence must have exactly one matching record")
+class ProductionEvidenceError(ValueError):
+    """A production evidence defect that must cross planning as a formal rejection."""
+
+    def __init__(
+        self,
+        reason: ExecutionRejectionReason,
+        label: str,
+        catalog: SimulationEvidenceCatalog,
+    ) -> None:
+        super().__init__(f"{label} production evidence is unavailable or contradictory")
+        self.reason = reason
+        self.label = label
+        self.stage = catalog.stage
+        self.code_commit = catalog.code_commit
+        self.dependency_lock_hash = catalog.dependency_lock_hash
+
+
+def _matches(values: tuple[object, ...], predicate) -> tuple[object, ...]:
+    return tuple(item for item in values if predicate(item))
+
+
+def _required_production_evidence(
+    values: tuple[object, ...],
+    predicate,
+    label: str,
+    catalog: SimulationEvidenceCatalog,
+    *,
+    missing_reason: ExecutionRejectionReason,
+) -> object:
+    matches = _matches(values, predicate)
+    if len(matches) > 1:
+        raise ProductionEvidenceError(ExecutionRejectionReason.DATA_INVALID, label, catalog)
+    if not matches:
+        raise ProductionEvidenceError(missing_reason, label, catalog)
     return matches[0]
+
+
+def _optional_production_evidence(
+    values: tuple[object, ...],
+    predicate,
+    label: str,
+    catalog: SimulationEvidenceCatalog,
+) -> object | None:
+    matches = _matches(values, predicate)
+    if len(matches) > 1:
+        raise ProductionEvidenceError(ExecutionRejectionReason.DATA_INVALID, label, catalog)
+    return matches[0] if matches else None
 
 
 def _position_unrealized(position: object, mark: Decimal) -> Decimal:
@@ -170,14 +217,22 @@ def build_planning_evidence_from_engine(
     catalog: SimulationEvidenceCatalog,
 ) -> PlanningEvidenceFromEngine:
     if state.pending_plan_reserve != 0:
-        raise ValueError("pending Plan reserve lacks replayable per-Plan evidence")
+        raise ProductionEvidenceError(
+            ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE,
+            "pending Plan reserve",
+            catalog,
+        )
     mark_by_symbol = {bar.symbol: bar.open for bar in minute.mark_bars}
     valuations = []
     position_records = []
     risks = []
     for position in state.positions:
         if position.symbol not in mark_by_symbol:
-            raise ValueError("current mark-open evidence is unavailable for position")
+            raise ProductionEvidenceError(
+                ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE,
+                "current mark-open",
+                catalog,
+            )
         valuations.append(
             valuation_evidence(
                 symbol=position.symbol,
@@ -235,9 +290,13 @@ def build_entry_batch_inputs_from_engine(
     )
 
     if not due_intents:
-        raise ValueError("production entry batch requires due Intents")
+        raise ProductionEvidenceError(
+            ExecutionRejectionReason.DATA_INVALID, "due EntryIntent", catalog
+        )
     if any(item.target_execution_time_utc_ms != minute.minute_open_utc_ms for item in due_intents):
-        raise ValueError("future or stale EntryIntent reached production evidence bridge")
+        raise ProductionEvidenceError(
+            ExecutionRejectionReason.DATA_INVALID, "EntryIntent target time", catalog
+        )
     evidence = build_planning_evidence_from_engine(
         state=state,
         minute=minute,
@@ -249,44 +308,56 @@ def build_entry_batch_inputs_from_engine(
     for intent in sorted(due_intents, key=lambda item: (item.symbol, item.intent_id)):
         candidate = candidate_by_id.get(intent.candidate_id)
         if candidate is None:
-            raise ValueError("EntryIntent Candidate is absent from visible Candidate index")
+            raise ProductionEvidenceError(
+                ExecutionRejectionReason.DATA_INVALID, "EntryIntent Candidate identity", catalog
+            )
         target = intent.target_execution_time_utc_ms
         symbol = intent.symbol
-        target_open = _one(
+        target_open = _required_production_evidence(
             catalog.target_opens,
             lambda item, symbol=symbol, target=target: (
                 item.symbol == symbol and item.open_time_utc_ms == target
             ),
             "target-open",
+            catalog,
+            missing_reason=ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE,
         )
-        watermark = _one(
+        watermark = _required_production_evidence(
             catalog.watermarks,
             lambda item, symbol=symbol, target=target: (
                 item.symbol == symbol and item.target_open_time_utc_ms == target
             ),
             "watermark",
+            catalog,
+            missing_reason=ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE,
         )
-        contract = _one(
+        contract = _required_production_evidence(
             catalog.contracts,
             lambda item, symbol=symbol, target=target: (
                 item.symbol == symbol and item.query_time_utc_ms == target
             ),
             "contract",
+            catalog,
+            missing_reason=ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE,
         )
-        cost = _one(
+        cost = _required_production_evidence(
             catalog.costs,
             lambda item, symbol=symbol: item.symbol == symbol,
             "cost",
+            catalog,
+            missing_reason=ExecutionRejectionReason.COST_MODEL_UNAVAILABLE,
         )
-        schedule = _one(
+        schedule = _required_production_evidence(
             catalog.funding_schedules,
             lambda item, symbol=symbol, target=target: (
                 item.symbol == symbol
                 and item.effective_from_utc_ms <= target < item.effective_to_utc_ms
             ),
             "funding schedule",
+            catalog,
+            missing_reason=ExecutionRejectionReason.FUNDING_SCHEDULE_UNVERIFIED,
         )
-        funding_risk = _one(
+        funding_risk = _required_production_evidence(
             catalog.funding_risks,
             lambda item, symbol=symbol, target=target: (
                 item.symbol == symbol
@@ -294,10 +365,14 @@ def build_entry_batch_inputs_from_engine(
                 and item.effective_from_utc_ms <= target < item.effective_to_utc_ms
             ),
             "funding risk",
+            catalog,
+            missing_reason=ExecutionRejectionReason.FUNDING_RISK_CONFIG_UNAVAILABLE,
         )
         trade_bar = trade_by_symbol.get(symbol)
         if trade_bar is None or trade_bar.open != target_open.open_price:
-            raise ValueError("target-open evidence does not match current trade open")
+            raise ProductionEvidenceError(
+                ExecutionRejectionReason.DATA_INVALID, "target-open evidence", catalog
+            )
         items.append(
             EntryBatchItemEvidence(
                 candidate=candidate,
@@ -335,6 +410,7 @@ def build_exit_inputs_from_engine(
     intent: object,
     evidence: PlanningEvidenceFromEngine,
 ):
+    from pa_agent.research_backtest.domain.contracts import unavailable_contract_rule
     from pa_agent.research_backtest.planning.exits import ExitPlanningInputs
     from pa_agent.research_backtest.simulation.positions import (
         exit_execution_position_snapshot,
@@ -342,41 +418,63 @@ def build_exit_inputs_from_engine(
 
     target = intent.target_execution_time_utc_ms
     if target != evidence.minute.minute_open_utc_ms:
-        raise ValueError("future or stale ExitIntent reached production evidence bridge")
-    position = _one(
+        raise ProductionEvidenceError(
+            ExecutionRejectionReason.DATA_INVALID,
+            "ExitIntent target time",
+            evidence.catalog,
+        )
+    position = _required_production_evidence(
         state.positions,
         lambda item: item.position_id == intent.position_id and item.symbol == intent.symbol,
         "position",
+        evidence.catalog,
+        missing_reason=ExecutionRejectionReason.DATA_INVALID,
     )
-    target_open = _one(
+    target_open = _optional_production_evidence(
         evidence.catalog.target_opens,
         lambda item: item.symbol == intent.symbol and item.open_time_utc_ms == target,
         "target-open",
+        evidence.catalog,
     )
-    watermark = _one(
+    watermark = _required_production_evidence(
         evidence.catalog.watermarks,
         lambda item: item.symbol == intent.symbol and item.target_open_time_utc_ms == target,
         "watermark",
+        evidence.catalog,
+        missing_reason=ExecutionRejectionReason.TARGET_MINUTE_UNAVAILABLE,
     )
-    contract = _one(
+    contract = _optional_production_evidence(
         evidence.catalog.contracts,
         lambda item: item.symbol == intent.symbol and item.query_time_utc_ms == target,
         "contract",
+        evidence.catalog,
     )
-    cost = _one(
+    cost = _optional_production_evidence(
         evidence.catalog.costs,
         lambda item: item.symbol == intent.symbol,
         "cost",
+        evidence.catalog,
     )
-    trade_bar = _one(
+    trade_bar = _required_production_evidence(
         evidence.minute.trade_bars,
         lambda item: item.symbol == intent.symbol,
         "trade bar",
+        evidence.catalog,
+        missing_reason=ExecutionRejectionReason.DATA_INVALID,
     )
-    if target_open.open_price != trade_bar.open:
-        raise ValueError("target-open evidence does not match current trade open")
-    if position.quantity != intent.full_exit_quantity:
-        raise ValueError("ExitIntent quantity does not match current position")
+    if target_open is not None and target_open.open_price != trade_bar.open:
+        raise ProductionEvidenceError(
+            ExecutionRejectionReason.DATA_INVALID,
+            "target-open evidence",
+            evidence.catalog,
+        )
+    if contract is None:
+        contract = unavailable_contract_rule(
+            symbol=intent.symbol,
+            query_time_utc_ms=target,
+            unavailable_reason="PRODUCTION_EVIDENCE_NOT_FOUND",
+            searched_archive_hashes=(evidence.catalog.catalog_content_hash,),
+        )
     return ExitPlanningInputs(
         intent=intent,
         target_open=target_open,
@@ -393,8 +491,13 @@ def build_exit_inputs_from_engine(
 
 
 def production_planning_evidence_factory(catalog: SimulationEvidenceCatalog):
-    def factory(state: EngineState, minute: MinuteInputSlice) -> PlanningEvidenceFromEngine:
-        return build_planning_evidence_from_engine(state=state, minute=minute, catalog=catalog)
+    def factory(
+        state: EngineState, minute: MinuteInputSlice
+    ) -> PlanningEvidenceFromEngine | ProductionEvidenceError:
+        try:
+            return build_planning_evidence_from_engine(state=state, minute=minute, catalog=catalog)
+        except ProductionEvidenceError as error:
+            return error
 
     factory.catalog_id = catalog.catalog_id  # type: ignore[attr-defined]
     factory.catalog_content_hash = catalog.catalog_content_hash  # type: ignore[attr-defined]
@@ -413,14 +516,22 @@ class ExecutionCostEvidence:
 
 def production_execution_cost_factory(catalog: SimulationEvidenceCatalog):
     def factory(symbol: str, event_time_utc_ms: int) -> ExecutionCostEvidence:
-        cost = _one(catalog.costs, lambda item: item.symbol == symbol, "cost")
-        contract = _one(
+        cost = _required_production_evidence(
+            catalog.costs,
+            lambda item: item.symbol == symbol,
+            "cost",
+            catalog,
+            missing_reason=ExecutionRejectionReason.COST_MODEL_UNAVAILABLE,
+        )
+        contract = _required_production_evidence(
             catalog.contracts,
             lambda item: (
                 item.symbol == symbol
                 and item.effective_from_utc_ms <= event_time_utc_ms < item.effective_to_utc_ms
             ),
             "contract",
+            catalog,
+            missing_reason=ExecutionRejectionReason.CONTRACT_RULE_UNAVAILABLE,
         )
         return ExecutionCostEvidence(
             symbol=symbol,
@@ -439,7 +550,7 @@ def production_execution_cost_factory(catalog: SimulationEvidenceCatalog):
 def production_maintenance_evidence_factory(catalog: SimulationEvidenceCatalog):
     def factory(position: object, event_time_utc_ms: int):
         notional = position.quantity * position.entry_price
-        return _one(
+        return _required_production_evidence(
             catalog.maintenance,
             lambda item: (
                 item.symbol == position.symbol
@@ -447,6 +558,8 @@ def production_maintenance_evidence_factory(catalog: SimulationEvidenceCatalog):
                 and item.notional_floor <= notional < item.notional_cap
             ),
             "maintenance",
+            catalog,
+            missing_reason=ExecutionRejectionReason.REQUIRED_ACCOUNT_EVIDENCE_UNAVAILABLE,
         )
 
     factory.catalog_id = catalog.catalog_id  # type: ignore[attr-defined]

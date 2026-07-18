@@ -121,8 +121,11 @@ class EngineDependencies:
     evidence_catalog: object | None = None
     catalog_id: str | None = None
     catalog_content_hash: str | None = None
+    stage: ResearchStage = ResearchStage.BACKTEST
 
     def __post_init__(self) -> None:
+        if not isinstance(self.stage, ResearchStage):
+            raise ValueError("EngineDependencies stage must be a formal ResearchStage")
         configured = self.exit_delay_minutes
         factory_delay = getattr(self.exit_intent_factory, "exit_delay_minutes", None)
         for value in (configured, factory_delay):
@@ -244,11 +247,32 @@ def _maintenance_reference(
     position: IsolatedPosition,
     event_time_utc_ms: int,
 ) -> object:
+    from pa_agent.research_backtest.simulation.evidence import ProductionEvidenceError
+
     try:
         evidence = dependencies.maintenance_evidence_factory(position, event_time_utc_ms)
+    except ProductionEvidenceError as error:
+        return PathInvalidEvent(
+            event_time_utc_ms, f"PRODUCTION_EVIDENCE:{error.reason.value}:{error.label}"
+        )
     except (LookupError, ValueError):
         return PathInvalidEvent(event_time_utc_ms, "MAINTENANCE_EVIDENCE_UNAVAILABLE")
     return estimated_liquidation(position, evidence, event_time_utc_ms)
+
+
+def _execution_cost_reference(
+    dependencies: EngineDependencies,
+    symbol: str,
+    event_time_utc_ms: int,
+) -> object:
+    from pa_agent.research_backtest.simulation.evidence import ProductionEvidenceError
+
+    try:
+        return dependencies.execution_cost_factory(symbol, event_time_utc_ms)
+    except ProductionEvidenceError as error:
+        return PathInvalidEvent(
+            event_time_utc_ms, f"PRODUCTION_EVIDENCE:{error.reason.value}:{error.label}"
+        )
 
 
 def _equity_point(state: EngineState, time: int) -> EquityPoint:
@@ -459,7 +483,11 @@ def process_minute(
         if not candidates:
             continue
         chosen = choose_open_gap_trigger(candidates)
-        cost = dependencies.execution_cost_factory(pos.symbol, time)
+        cost = _execution_cost_reference(dependencies, pos.symbol, time)
+        if isinstance(cost, PathInvalidEvent):
+            return _invalid_result(
+                state, cost.reason, time, events, fills, ledgers, trades, planning
+            )
         fill = make_protective_exit_fill(
             pos,
             chosen,
@@ -529,7 +557,7 @@ def process_minute(
         outputs = plan_due_exits(state, due_exits, time, evidence, dependencies.planners)
         planning.extend(outputs)
         exit_rejections = tuple(item for item in outputs if isinstance(item, ExecutionRejection))
-        exit_policy = apply_rejection_policy(exit_rejections, ResearchStage.BACKTEST)
+        exit_policy = apply_rejection_policy(exit_rejections, dependencies.stage)
         if exit_policy.action is not RejectionPolicyAction.CONTINUE:
             return _invalid_result(
                 state,
@@ -634,7 +662,7 @@ def process_minute(
             raise AssertionError("due entry batch produced no planning outcome")
         planning.extend(outcome.audit_objects)
         entry_policy = apply_rejection_policy(
-            getattr(outcome, "execution_rejections", ()), ResearchStage.BACKTEST
+            getattr(outcome, "execution_rejections", ()), dependencies.stage
         )
         if entry_policy.action is not RejectionPolicyAction.CONTINUE:
             return _invalid_result(
@@ -705,7 +733,11 @@ def process_minute(
             _bar(minute.mark_bars, pos.symbol),
             reference.liquidation_price,
         )
-        cost = dependencies.execution_cost_factory(pos.symbol, time)
+        cost = _execution_cost_reference(dependencies, pos.symbol, time)
+        if isinstance(cost, PathInvalidEvent):
+            return _invalid_result(
+                state, cost.reason, time, events, fills, ledgers, trades, planning
+            )
         enriched: list[TriggerCandidate] = []
         for item in candidates:
             probe = make_protective_exit_fill(
@@ -971,9 +1003,7 @@ def run_simulation(
                 candidate_rejections = tuple(
                     item for item in created if isinstance(item, ExecutionRejection)
                 )
-                candidate_policy = apply_rejection_policy(
-                    candidate_rejections, ResearchStage.BACKTEST
-                )
+                candidate_policy = apply_rejection_policy(candidate_rejections, dependencies.stage)
                 if candidate_policy.action is not RejectionPolicyAction.CONTINUE:
                     invalid_event = candidate_policy.path_invalid_event(minute.minute_open_utc_ms)
                     state = replace(
