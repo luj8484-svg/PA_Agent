@@ -29,6 +29,15 @@ class SimulationInputIdentity:
     cost_content_hash: str
     funding_risk_content_hash: str
     maintenance_content_hash: str
+    evidence_catalog_id: str
+    evidence_catalog_content_hash: str
+    target_open_content_hash: str
+    watermark_content_hash: str
+    execution_time_config_content_hash: str
+    planner_identity_content_hash: str
+    two_a_identity_content_hash: str
+    two_b_identity_content_hash: str
+    two_c_identity_content_hash: str
 
     def __post_init__(self) -> None:
         if self.schema_version != SIMULATION_INPUT_IDENTITY_VERSION:
@@ -54,6 +63,15 @@ def make_simulation_input_identity(
     cost_content_hash: str,
     funding_risk_content_hash: str,
     maintenance_content_hash: str,
+    evidence_catalog_id: str = "simevidence_unbound",
+    evidence_catalog_content_hash: str | None = None,
+    target_open_content_hash: str | None = None,
+    watermark_content_hash: str | None = None,
+    execution_time_config_content_hash: str | None = None,
+    planner_identity_content_hash: str | None = None,
+    two_a_identity_content_hash: str | None = None,
+    two_b_identity_content_hash: str | None = None,
+    two_c_identity_content_hash: str | None = None,
     simulation_inputs_content_hash: str | None = None,
 ) -> SimulationInputIdentity:
     components = {
@@ -65,6 +83,16 @@ def make_simulation_input_identity(
         "cost_content_hash": cost_content_hash,
         "funding_risk_content_hash": funding_risk_content_hash,
         "maintenance_content_hash": maintenance_content_hash,
+        "evidence_catalog_id": evidence_catalog_id,
+        "evidence_catalog_content_hash": evidence_catalog_content_hash or canonical_sha256(None),
+        "target_open_content_hash": target_open_content_hash or canonical_sha256(None),
+        "watermark_content_hash": watermark_content_hash or canonical_sha256(None),
+        "execution_time_config_content_hash": execution_time_config_content_hash
+        or canonical_sha256(None),
+        "planner_identity_content_hash": planner_identity_content_hash or canonical_sha256(None),
+        "two_a_identity_content_hash": two_a_identity_content_hash or canonical_sha256(None),
+        "two_b_identity_content_hash": two_b_identity_content_hash or canonical_sha256(None),
+        "two_c_identity_content_hash": two_c_identity_content_hash or canonical_sha256(None),
     }
     payload = {
         "schema_version": SIMULATION_INPUT_IDENTITY_VERSION,
@@ -83,6 +111,12 @@ def make_simulation_input_identity(
 def build_simulation_input_identity(
     inputs: SimulationInputs,
     catalog: SimulationEvidenceCatalog,
+    *,
+    execution_time_config: object | None = None,
+    planner_identity_content_hash: str | None = None,
+    two_a_identity_content_hash: str | None = None,
+    two_b_identity_content_hash: str | None = None,
+    two_c_identity_content_hash: str | None = None,
 ) -> SimulationInputIdentity:
     trade = tuple(bar for minute in inputs.minute_slices for bar in minute.trade_bars)
     mark = tuple(bar for minute in inputs.minute_slices for bar in minute.mark_bars)
@@ -101,6 +135,19 @@ def build_simulation_input_identity(
             {"schedules": catalog.funding_schedules, "risks": catalog.funding_risks}
         ),
         maintenance_content_hash=canonical_sha256(catalog.maintenance),
+        evidence_catalog_id=catalog.catalog_id,
+        evidence_catalog_content_hash=catalog.catalog_content_hash,
+        target_open_content_hash=canonical_sha256(catalog.target_opens),
+        watermark_content_hash=canonical_sha256(catalog.watermarks),
+        execution_time_config_content_hash=(
+            execution_time_config.config_content_hash
+            if execution_time_config is not None
+            else canonical_sha256(None)
+        ),
+        planner_identity_content_hash=planner_identity_content_hash,
+        two_a_identity_content_hash=two_a_identity_content_hash,
+        two_b_identity_content_hash=two_b_identity_content_hash,
+        two_c_identity_content_hash=two_c_identity_content_hash,
     )
 
 
@@ -108,9 +155,51 @@ def verify_simulation_input_identity(
     identity: SimulationInputIdentity,
     inputs: SimulationInputs,
     catalog: SimulationEvidenceCatalog,
+    *,
+    execution_time_config: object | None = None,
+    planner_identity_content_hash: str | None = None,
+    two_a_identity_content_hash: str | None = None,
+    two_b_identity_content_hash: str | None = None,
+    two_c_identity_content_hash: str | None = None,
 ) -> None:
-    expected = build_simulation_input_identity(inputs, catalog)
-    if identity != expected:
+    expected = build_simulation_input_identity(
+        inputs,
+        catalog,
+        execution_time_config=execution_time_config,
+        planner_identity_content_hash=planner_identity_content_hash,
+        two_a_identity_content_hash=two_a_identity_content_hash,
+        two_b_identity_content_hash=two_b_identity_content_hash,
+        two_c_identity_content_hash=two_c_identity_content_hash,
+    )
+    if all(
+        value is None
+        for value in (
+            execution_time_config,
+            planner_identity_content_hash,
+            two_a_identity_content_hash,
+            two_b_identity_content_hash,
+            two_c_identity_content_hash,
+        )
+    ):
+        base_fields = (
+            "simulation_inputs_content_hash",
+            "trade_content_hash",
+            "mark_content_hash",
+            "funding_content_hash",
+            "candidate_content_hash",
+            "contract_content_hash",
+            "cost_content_hash",
+            "funding_risk_content_hash",
+            "maintenance_content_hash",
+            "evidence_catalog_id",
+            "evidence_catalog_content_hash",
+            "target_open_content_hash",
+            "watermark_content_hash",
+        )
+        matches = all(getattr(identity, name) == getattr(expected, name) for name in base_fields)
+    else:
+        matches = identity == expected
+    if not matches:
         raise ValueError("identity does not match actual simulation inputs and evidence catalog")
 
 

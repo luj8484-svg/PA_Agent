@@ -86,9 +86,14 @@ def _validate_ledger_balances(state: EngineState) -> None:
 def validate_account_state(state: EngineState) -> None:
     _validate_ledger_balances(state)
     if state.equity != state.wallet_balance + state.unrealized_pnl:
-        raise ValueError("equity must equal wallet plus unrealized PnL")
+        raise AccountInvariantError("equity must equal wallet plus unrealized PnL")
     if state.peak_equity < state.equity:
-        raise ValueError("peak equity cannot be below current equity")
+        raise AccountInvariantError("peak equity cannot be below current equity")
+
+
+def assert_account_snapshot_consistent(state: EngineState) -> None:
+    """Reject any externally visible transitional ledger/valuation state."""
+    validate_account_state(state)
 
 
 def reduce_ledger(previous: EngineState, entries: tuple[LedgerEntry, ...]) -> EngineState:
@@ -124,3 +129,7 @@ def mark_equity(state: EngineState, unrealized_pnl: Decimal) -> EngineState:
     )
     validate_account_state(marked)
     return marked
+
+
+def commit_valuation(state: EngineState, unrealized_pnl: Decimal) -> EngineState:
+    return mark_equity(state, unrealized_pnl)

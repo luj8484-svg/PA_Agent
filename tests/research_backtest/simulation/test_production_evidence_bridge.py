@@ -164,13 +164,13 @@ def test_production_planner_dependencies_use_engine_bridge_by_default() -> None:
 
 def test_complete_run_uses_real_candidate_2b_bridge_fill_exit_and_manifest(tmp_path) -> None:
     from pa_agent.research_backtest.domain.config import execution_time_config
+    from pa_agent.research_backtest.simulation.context import (
+        make_production_run_context,
+        run_production_simulation,
+    )
     from pa_agent.research_backtest.simulation.domain import make_simulation_config
-    from pa_agent.research_backtest.simulation.engine import EngineDependencies, run_simulation
     from pa_agent.research_backtest.simulation.evidence import (
         make_simulation_evidence_catalog,
-        production_execution_cost_factory,
-        production_maintenance_evidence_factory,
-        production_planning_evidence_factory,
     )
     from pa_agent.research_backtest.simulation.inputs import (
         MinuteBar,
@@ -179,10 +179,6 @@ def test_complete_run_uses_real_candidate_2b_bridge_fill_exit_and_manifest(tmp_p
     )
     from pa_agent.research_backtest.simulation.liquidation import MaintenanceEvidence
     from pa_agent.research_backtest.simulation.output import write_canonical_result
-    from pa_agent.research_backtest.simulation.planning import (
-        make_candidate_intent_factory,
-        production_planner_dependencies,
-    )
 
     _, entries = _catalog_and_inputs()
     entry = entries[0]
@@ -255,34 +251,30 @@ def test_complete_run_uses_real_candidate_2b_bridge_fill_exit_and_manifest(tmp_p
         tuple(item.candidate for item in entries),
         (),
     )
+    execution = execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1)
     config = make_simulation_config(
         **(
             config_payload()
             | {
                 "simulation_start_utc_ms": start,
                 "simulation_end_exit_open_utc_ms": end,
+                "two_a_version": "INDICATOR_CONFIG_V1",
+                "two_b_planner_version": "2B_CANONICAL_VERSION_V1",
+                "two_b_planner_config_hash": execution.config_content_hash,
+                "two_c_engine_version": "MINUTE_ENGINE_V1",
+                "code_commit": catalog.code_commit,
+                "dependency_lock_hash": catalog.dependency_lock_hash,
             }
         )
     )
-    planner_dependencies = production_planner_dependencies(
-        catalog, tuple(item.candidate for item in entries)
-    )
-    dependencies = EngineDependencies(
-        planners=planner_dependencies,
-        entry_intent_factory=make_candidate_intent_factory(
-            execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1),
-            computational_experiment_id="f" * 64,
-            stage=entry.stage,
-            code_commit=entry.code_commit,
-            dependency_lock_hash=entry.dependency_lock_hash,
-        ),
-        exit_intent_factory=None,
-        planning_evidence_factory=production_planning_evidence_factory(catalog),
-        maintenance_evidence_factory=production_maintenance_evidence_factory(catalog),
-        execution_cost_factory=production_execution_cost_factory(catalog),
+    context = make_production_run_context(
+        inputs=inputs,
+        config=config,
         evidence_catalog=catalog,
+        execution_time_config=execution,
+        computational_experiment_id="f" * 64,
     )
-    result = run_simulation(inputs, config, dependencies)
+    result = run_production_simulation(inputs, context)
     assert all(path.path_result.path_state.value == "VALID" for path in result.paths), tuple(
         path.path_result for path in result.paths
     )

@@ -209,3 +209,25 @@ HALT 为吸收状态但不是立即终止模拟。PathResult 保存 `halt_trigge
 ## 12. 编码授权与停止线
 
 本规范完成交叉审计后授权按 TDD 实施 2C，无需再次纯文档审批。编码必须从批准基线创建独立 feature 分支；每个 Task 先写独立参考/Golden 再写生产代码。完成后创建 Draft PR 并停止等待源码审查。不得开始 2D，亦不得增加 GUI、LLM、API Key、HTTP、交易接口或自动下单能力。
+
+## 13. Final source-review integration amendment
+
+- Production execution has one closed `ProductionRunContext`. It binds the config,
+  catalog, Candidate stream, execution-time config, actual 2A/2B/2C identities,
+  code/dependency identities and `SimulationInputIdentity`. Only
+  `build_production_engine_dependencies(run_context)` may assemble production
+  factories. Any mismatch raises `RunConfigurationMismatch` before a path exists.
+- Scheduled exits bind `EXIT_EXECUTION_POSITION_SNAPSHOT_V1`, containing only
+  position/origin identity, symbol, side and quantity. Funding/reserve accounting
+  does not change this projection; geometry changes reject with
+  `POSITION_SNAPSHOT_CHANGED`.
+- Ledger mutation and valuation commit are distinct operations. No returned,
+  terminal or persisted state may violate `equity = wallet + unrealized_pnl`,
+  `peak >= equity`, non-negative locks, or non-negative available balance.
+  Same-stage multi-position exits rehearse atomically and commit valuation once.
+- `PathResult.entry_disabled` is derived from the presence of a halt trigger even
+  if a later failure changes the final state to `INVALID`; `PathResult.path_kind`
+  preserves the stable BASELINE/CONSERVATIVE identity.
+- The Stop/TP ambiguity Golden is a full minute-engine scenario: BASELINE selects
+  TP by open-distance while CONSERVATIVE selects STOP by minimum end equity, with
+  distinct Fill, Trade, Equity and PathResult content.

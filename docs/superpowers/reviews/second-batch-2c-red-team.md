@@ -54,3 +54,17 @@ Entry Plan 失败必须回滚整个批次；外部 input identity 与实际数�
 - RT-31 必须检查失败前后wallet、locks、position reserve/events完全不变，并保留独立于HALT Timeline的失败hash。
 - 防御必须由闭式类型、Canonical identity、纯 reducer invariant 或 scope guard 自动判定，不依赖日志文本或人工观察。
 - 红队不得扩展到 2D、GUI、LLM、网络或自动交易。
+
+## Final integration red-team closure
+
+- Reject swapped Config/Catalog code or dependency identity, a mismatched
+  ExecutionTimeConfig, mixed-catalog factories and substituted Candidates before
+  either path is initialized.
+- Reject a Scheduled Exit whose current execution projection changes, while
+  allowing legitimate funding-ledger evolution.
+- Reject any externally visible or terminal state with stale valuation after a
+  Ledger mutation. Reversing same-stage exits must not alter peak equity.
+- The ambiguity acceptance fixture must traverse the real engine and must produce
+  TP for BASELINE and STOP for CONSERVATIVE; a component-only resolver is insufficient.
+- CI may be reported as passing only after an actual GitHub Actions run. A merely
+  configured workflow is reported as configured but not run.

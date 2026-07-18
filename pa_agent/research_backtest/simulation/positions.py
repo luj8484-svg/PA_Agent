@@ -3,7 +3,51 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from pa_agent.research_backtest.domain.base import formal_identity, verify_formal_identity
 from pa_agent.research_backtest.domain.enums import Side
+
+EXIT_EXECUTION_POSITION_SNAPSHOT_VERSION = "EXIT_EXECUTION_POSITION_SNAPSHOT_V1"
+
+
+@dataclass(frozen=True, slots=True)
+class ExitExecutionPositionSnapshot:
+    schema_version: str
+    snapshot_id: str
+    snapshot_content_hash: str
+    position_id: str
+    origin_plan_id: str
+    origin_candidate_id: str
+    symbol: str
+    side: Side
+    quantity: Decimal
+
+    def __post_init__(self) -> None:
+        if self.schema_version != EXIT_EXECUTION_POSITION_SNAPSHOT_VERSION:
+            raise ValueError("unsupported exit execution-position snapshot")
+        verify_formal_identity(
+            self,
+            id_field="snapshot_id",
+            hash_field="snapshot_content_hash",
+            prefix="exitpos_",
+        )
+
+
+def exit_execution_position_snapshot(position: object) -> ExitExecutionPositionSnapshot:
+    payload = {
+        "schema_version": EXIT_EXECUTION_POSITION_SNAPSHOT_VERSION,
+        "position_id": position.position_id,
+        "origin_plan_id": position.origin_plan_id,
+        "origin_candidate_id": position.origin_candidate_id,
+        "symbol": position.symbol,
+        "side": position.side,
+        "quantity": position.quantity,
+    }
+    snapshot_id, digest = formal_identity("exitpos_", payload)
+    return ExitExecutionPositionSnapshot(
+        snapshot_id=snapshot_id,
+        snapshot_content_hash=digest,
+        **payload,
+    )
 
 
 @dataclass(frozen=True, slots=True)

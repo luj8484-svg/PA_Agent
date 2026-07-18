@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
-from pa_agent.research_backtest.simulation.domain import PathState
+from pa_agent.research_backtest.simulation.domain import PathKind, PathState
 from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
 
 
@@ -14,6 +14,7 @@ from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
 class PathResult:
     path_state: PathState
     final_processed_time_utc_ms: int
+    path_kind: PathKind | None = None
     invalid_reason: str | None = None
     halt_trigger_time_utc_ms: int | None = None
     halt_reason: str | None = None
@@ -105,6 +106,11 @@ def write_canonical_result(result: object, output_directory: str | Path) -> Outp
     }
     for path in result.paths:
         for minute in path.minute_results:
+            from pa_agent.research_backtest.simulation.ledger import (
+                assert_account_snapshot_consistent,
+            )
+
+            assert_account_snapshot_consistent(minute.state)
             rows["events.jsonl"].extend(minute.events)
             rows["fills.jsonl"].extend(minute.fills)
             rows["ledger.jsonl"].extend(minute.ledger_entries)

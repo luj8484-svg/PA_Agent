@@ -5,13 +5,13 @@
       "scenario_id": "BTC_ETH_SAME_MINUTE_BATCH",
       "producer_test_file": "tests/research_backtest/simulation/test_production_evidence_bridge.py",
       "producer_test_name": "test_complete_run_uses_real_candidate_2b_bridge_fill_exit_and_manifest",
-      "input_fixture_hash": "c6ce387c5e730a01ab41675fca835516f38bd0b7bd8d70fa50a28f29c3700cd3",
+      "input_fixture_hash": "7c8d0b43216fd2fa28b7be9f9503c0b9dd155761e7a6d416c6925e02cd89fed2",
       "event_sequence_hash": "039e9a6d7bf86265a119a01cf2b73072d4ec5bfc2241c85a4b26df3c8e94b461",
       "ledger_hash": "3dee7d45c19d7474aa019b86487a381411e39563139151086e56aff049dfb28a",
       "fill_trade_hash": "505a812021fe21fec10ad08fba2c095ec5a6d0c31dd49c9d01bc8d88536f3e6c",
-      "equity_hash": "92feacd19810d265a711471fb80cae8abe9e3038e5cf0dbdb648549f7da22a60",
-      "path_result_hash": "887d4c09f034a0ab730e603b688bb26b6d1bf04b949d099b57a76054c659966c",
-      "content_hash": "1de87ad421cdb1ec72be71af84efbfea1ccbb130d9309792ba0fdf80666f9419"
+      "equity_hash": "7fa2c69a848c95c0f951daeac3afdc1aa2778dee957a86a00f422d43bd408bce",
+      "path_result_hash": "4a47b4c7a9bd2dab521cb01cbd95386dc5def8e324091f3208a2417c446c1c46",
+      "content_hash": "d57ea728f273edea919eca6c72ef0dab867cad8c9dd4ecce126d7d98382f49de"
     },
     {
       "scenario_id": "FUNDING_WITH_TIME_EXIT",
@@ -29,13 +29,13 @@
       "scenario_id": "STOP_TP_AMBIGUITY_TWO_PATHS",
       "producer_test_file": "tests/research_backtest/simulation/test_triggers_ambiguity_halt.py",
       "producer_test_name": "test_stop_tp_ambiguity_produces_two_canonical_path_decisions",
-      "input_fixture_hash": "b425435c930add5ce1058eaee0d39af29c0a53f88eb13d0f67b5106b5592377c",
-      "event_sequence_hash": "4396cc4b4502d3438c168b70ad63848aaae03526972f634259283a2d662d0430",
-      "ledger_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "fill_trade_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "equity_hash": "dcab25d3ea6876e7cf4d794f8a1a937831a6daa3c3b34c71b056f85f1aa676c5",
-      "path_result_hash": "4396cc4b4502d3438c168b70ad63848aaae03526972f634259283a2d662d0430",
-      "content_hash": "71d406efea96ca9b8a88dd17faabc78671da0e3baa26959b70935018d56ca0e5"
+      "input_fixture_hash": "f190b60bbe1a74f82e09b978c682e2896323768852f8a0a161051b53c75594c0",
+      "event_sequence_hash": "a6bc8018392097253e9166c20827f346c8a9a59bae3e79c4e233969e3a1004e5",
+      "ledger_hash": "ac1cfe7508aed6c5c273dbd548c9e285a9023d93d1951265bd5cc5d529f520b1",
+      "fill_trade_hash": "4146353d21ad0abf8d7dc2380316e1efd36bc6e2afe20019b14d6f7606bd6a35",
+      "equity_hash": "71a1be1a9c3cff046a0d6df19d8993ef185d3da1eae170cf2df01c91e33963fe",
+      "path_result_hash": "594882c2de76f59556ebba2cd98ff3d70459b885541cbca74cda8140cc28e2f0",
+      "content_hash": "44e1e02bcdc8ea3a36ce4776faa4591f8523b18bf6006ad5031431af1ae645af"
     },
     {
       "scenario_id": "OPEN_LIQUIDATION_PRIORITY",
@@ -74,5 +74,5 @@
       "content_hash": "33df5f1059c59f7cf6fda17c0ba0aff4743d96db2d8b6a1935f42fa9c4bd6ed5"
     }
   ],
-  "manifest_content_hash": "a4a2efcb8437133af86c9a6d0311231520d374e50c7ff0c39361fecc3be63a60"
+  "manifest_content_hash": "913c208c5e6ecbca7d638e36db4146b06747a5eb2fe9b6e84a1b8ca55fef0d06"
 }

@@ -61,7 +61,10 @@ from pa_agent.research_backtest.planning.intents import make_entry_intent
 from pa_agent.research_backtest.planning.portfolio import scale_portfolio
 from pa_agent.research_backtest.planning.sizing import SizingInputs, position_sizing
 from pa_agent.research_backtest.simulation.inputs import PathInvalidEvent
-from pa_agent.research_backtest.simulation.positions import IsolatedPosition
+from pa_agent.research_backtest.simulation.positions import (
+    IsolatedPosition,
+    exit_execution_position_snapshot,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +73,8 @@ class PlannerDependencies:
     entry_planner: Callable[[object], object] | None
     exit_inputs_factory: Callable[[object, object, object], object] | None
     exit_planner: Callable[[object], object] | None
+    catalog_id: str | None = None
+    catalog_content_hash: str | None = None
 
 
 def production_planner_dependencies(
@@ -104,6 +109,8 @@ def production_planner_dependencies(
         build_entry_batch_planning_outcome,
         exit_inputs_factory,
         build_exit_execution_plan,
+        catalog.catalog_id,
+        catalog.catalog_content_hash,
     )
 
 
@@ -448,7 +455,7 @@ def make_scheduled_exit_intent_factory(
     ) -> object:
         del state
         selected_reason = choose_scheduled_reason(matched_reasons)
-        position_hash = canonical_sha256(position)
+        position_hash = exit_execution_position_snapshot(position).snapshot_content_hash
         visible_hash = canonical_sha256(
             {
                 "position_snapshot_hash": position_hash,

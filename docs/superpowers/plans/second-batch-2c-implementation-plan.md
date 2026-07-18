@@ -150,3 +150,18 @@ Task 5 depends on the account/funding/liquidation evidence implemented in Tasks 
 ## Authorization and semantic change gate
 
 This plan is authorized for TDD implementation after the four-document cross-audit passes. Any change to Plan-generation timing, Scheduled Exit source rules, `MINUTE_EVENT_ORDER_V2`, funding boundary, gap priority/fill, bounded-path policy, fixed isolated margin, reserve-exceeded behavior, HALT/INVALID semantics or SimulationConfig identity requires a version bump and human review. Completion means Draft PR only; no merge and no 2D.
+
+## Final integration closeout tasks
+
+- [x] Add the unique production context and pre-path mismatch gate.
+- [x] Bind production input identity to actual catalog, market evidence and
+  2A/2B/2C execution identities.
+- [x] Version the Scheduled Exit execution-position projection and test the real
+  2B exit chain across funding.
+- [x] Separate Ledger mutation from valuation commit; atomically batch exits and
+  assert every returned/persisted account snapshot.
+- [x] Replace the component ambiguity Golden with a complete dual-path engine Golden.
+- [x] Configure CPython 3.12.13 GitHub Actions to run the research verification
+  commands without GUI or legacy E2E.
+- [ ] Run the final local matrix, push the reviewed commit, update the Draft PR
+  with exact counts and actual workflow status, then stop without 2D.

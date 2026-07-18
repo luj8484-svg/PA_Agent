@@ -12,7 +12,7 @@ from pa_agent.research_backtest.simulation.ledger import (
     LedgerEntry,
     LedgerKind,
     LedgerReplayError,
-    mark_equity,
+    commit_valuation,
     reduce_ledger,
 )
 from pa_agent.research_backtest.simulation.positions import (
@@ -80,6 +80,24 @@ class EntryBatchCommitFailure:
     fills: tuple[FillEvent, ...] = ()
     ledger_entries: tuple[LedgerEntry, ...] = ()
     positions: tuple[IsolatedPosition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExitBatchCommit:
+    state: EngineState
+    fills: tuple[FillEvent, ...]
+    ledger_entries: tuple[LedgerEntry, ...]
+    trades: tuple[TradeRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExitBatchCommitFailure:
+    state: EngineState
+    reason: str
+    error_type: str
+    fills: tuple[FillEvent, ...] = ()
+    ledger_entries: tuple[LedgerEntry, ...] = ()
+    trades: tuple[TradeRecord, ...] = ()
 
 
 def _fill(payload: dict[str, object]) -> FillEvent:
@@ -260,6 +278,7 @@ def apply_exit_fill(
     fill: FillEvent,
     *,
     remaining_unrealized_pnl: Decimal,
+    commit_final_valuation: bool = True,
 ) -> tuple[EngineState, tuple[LedgerEntry, ...], TradeRecord]:
     if fill.action is not FillAction.EXIT or fill.position_id != position.position_id:
         raise ValueError("exit Fill does not match open position")
@@ -303,7 +322,8 @@ def apply_exit_fill(
         consumed_plan_ids=tuple(sorted(set((*state.consumed_plan_ids, fill.plan_id)))),
         consumed_close_ids=tuple(sorted((*state.consumed_close_ids, position.position_id))),
     )
-    reduced = mark_equity(reduced, remaining_unrealized_pnl)
+    if commit_final_valuation:
+        reduced = commit_valuation(reduced, remaining_unrealized_pnl)
     net = gross - position.entry_fee_paid - fill.fee + position.funding_wallet_delta_sum
     trade = TradeRecord(
         position_id=position.position_id,
@@ -324,6 +344,48 @@ def apply_exit_fill(
         origin_candidate_id=position.origin_candidate_id,
     )
     return reduced, entries, trade
+
+
+def apply_exit_batch(
+    state: EngineState,
+    items: tuple[tuple[IsolatedPosition, FillEvent], ...],
+    *,
+    remaining_unrealized_pnl: Decimal,
+) -> ExitBatchCommit | ExitBatchCommitFailure:
+    """Rehearse all same-stage exits and expose one valuation commit."""
+    try:
+        ordered = tuple(
+            sorted(items, key=lambda item: (item[0].symbol, item[0].position_id, item[1].fill_id))
+        )
+        position_ids = tuple(position.position_id for position, _ in ordered)
+        fill_ids = tuple(fill.fill_id for _, fill in ordered)
+        if len(set(position_ids)) != len(position_ids):
+            raise ValueError("duplicate exit position in batch")
+        if len(set(fill_ids)) != len(fill_ids):
+            raise ValueError("duplicate exit Fill in batch")
+        temporary = state
+        fills: list[FillEvent] = []
+        entries: list[LedgerEntry] = []
+        trades: list[TradeRecord] = []
+        for position, fill in ordered:
+            temporary, item_entries, trade = apply_exit_fill(
+                temporary,
+                position,
+                fill,
+                remaining_unrealized_pnl=remaining_unrealized_pnl,
+                commit_final_valuation=False,
+            )
+            fills.append(fill)
+            entries.extend(item_entries)
+            trades.append(trade)
+        temporary = commit_valuation(temporary, remaining_unrealized_pnl)
+        return ExitBatchCommit(temporary, tuple(fills), tuple(entries), tuple(trades))
+    except (AccountInvariantError, LedgerReplayError, ValueError) as exc:
+        return ExitBatchCommitFailure(
+            state=state,
+            reason="EXIT_BATCH_POST_PLAN_INVARIANT_VIOLATION",
+            error_type=type(exc).__name__,
+        )
 
 
 def stable_entry_plan_order(plans: tuple[object, ...]) -> tuple[object, ...]:

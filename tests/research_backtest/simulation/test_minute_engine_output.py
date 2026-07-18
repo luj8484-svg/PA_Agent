@@ -1178,12 +1178,13 @@ def test_exit_account_invariant_failure_is_terminal_invalid() -> None:
         target_execution_time_utc_ms=60_000,
         quantity=pos.quantity,
         expected_exit_fill_price=Decimal("1"),
-        expected_exit_fee=Decimal("1"),
+        expected_exit_fee=Decimal("2000"),
     )
     state = replace(
         initial_engine_state(config()),
-        wallet_balance=Decimal("20"),
-        equity=Decimal("20"),
+        wallet_balance=Decimal("1000"),
+        equity=Decimal("1000"),
+        peak_equity=Decimal("1000"),
         positions=(pos,),
         pending_exit_intents=(due,),
         locked_initial_margin=pos.initial_margin,
@@ -1199,7 +1200,7 @@ def test_exit_account_invariant_failure_is_terminal_invalid() -> None:
         ),
     )
     assert result.state.path_state.value == "INVALID"
-    assert result.planning_outputs[-1].reason == "ACCOUNT_INVARIANT_VIOLATION"
+    assert result.planning_outputs[-1].reason == "EXIT_BATCH_POST_PLAN_INVARIANT_VIOLATION"
 
 
 def test_funding_record_from_another_minute_is_invalid() -> None:

@@ -18,10 +18,11 @@ from pa_agent.research_backtest.simulation.domain import (
 )
 from pa_agent.research_backtest.simulation.fills import (
     EntryBatchCommitFailure,
+    ExitBatchCommitFailure,
     FillEvent,
     TradeRecord,
     apply_entry_batch,
-    apply_exit_fill,
+    apply_exit_batch,
     make_protective_exit_fill,
     make_scheduled_exit_fill,
     stable_entry_plan_order,
@@ -44,7 +45,9 @@ from pa_agent.research_backtest.simulation.ledger import (
     AccountInvariantError,
     LedgerEntry,
     LedgerKind,
+    assert_account_snapshot_consistent,
     available_balance,
+    commit_valuation,
     mark_equity,
     reduce_ledger,
 )
@@ -116,6 +119,8 @@ class EngineDependencies:
     execution_cost_factory: Callable[[str, int], object]
     exit_delay_minutes: int | None = None
     evidence_catalog: object | None = None
+    catalog_id: str | None = None
+    catalog_content_hash: str | None = None
 
     def __post_init__(self) -> None:
         configured = self.exit_delay_minutes
@@ -165,6 +170,36 @@ class SimulationResult:
     paths: tuple[PathRun, ...]
 
 
+def build_path_result(
+    state: EngineState,
+    minute_results: tuple[MinuteResult, ...] | list[MinuteResult],
+    simulation_start_utc_ms: int,
+) -> PathResult:
+    """Project the canonical terminal result from engine-produced state and events."""
+    return PathResult(
+        path_state=state.path_state,
+        final_processed_time_utc_ms=(
+            state.final_processed_time_utc_ms
+            if state.final_processed_time_utc_ms is not None
+            else simulation_start_utc_ms
+        ),
+        path_kind=state.path_kind,
+        invalid_reason=next(
+            (
+                item.reason
+                for result in reversed(minute_results)
+                for item in result.planning_outputs
+                if isinstance(item, PathInvalidEvent)
+            ),
+            None,
+        ),
+        halt_trigger_time_utc_ms=state.halt_trigger_time_utc_ms,
+        halt_reason=state.halt_reason,
+        entry_disabled=state.halt_trigger_time_utc_ms is not None,
+        flat_after_halt_time_utc_ms=state.flat_after_halt_time_utc_ms,
+    )
+
+
 def _event(state: EngineState, time: int, stage: str, kind: str, subject: str | None = None):
     payload = {
         "event_time_utc_ms": time,
@@ -202,6 +237,18 @@ def _mark_total(positions: tuple[object, ...], bars: tuple[MinuteBar, ...], fiel
         mark = getattr(_bar(bars, item.symbol), field)
         total += _unrealized(item, mark)
     return total
+
+
+def _maintenance_reference(
+    dependencies: EngineDependencies,
+    position: IsolatedPosition,
+    event_time_utc_ms: int,
+) -> object:
+    try:
+        evidence = dependencies.maintenance_evidence_factory(position, event_time_utc_ms)
+    except (LookupError, ValueError):
+        return PathInvalidEvent(event_time_utc_ms, "MAINTENANCE_EVIDENCE_UNAVAILABLE")
+    return estimated_liquidation(position, evidence, event_time_utc_ms)
 
 
 def _equity_point(state: EngineState, time: int) -> EquityPoint:
@@ -244,6 +291,7 @@ def _invalid_result(
         path_state=PathState.INVALID,
         final_processed_time_utc_ms=time,
     )
+    assert_account_snapshot_consistent(invalid)
     planning.append(invalid_event)
     return MinuteResult(
         invalid,
@@ -353,6 +401,7 @@ def process_minute(
                 ),
             )
     events.append(_event(state, time, EVENT_STAGES[3], "STAGE"))
+    funding_mutated = False
     for record in minute.funding_records:
         for pos in tuple(state.positions):
             obligation_id = f"{pos.position_id}:{record.record_id}"
@@ -388,12 +437,16 @@ def process_minute(
                 consumed_funding_ids=tuple(sorted((*state.consumed_funding_ids, obligation_id))),
             )
             ledgers.extend(entries)
+            funding_mutated = True
             events.append(_event(state, time, EVENT_STAGES[3], "FUNDING", record.record_id))
 
+    if funding_mutated:
+        state = commit_valuation(state, _mark_total(state.positions, minute.mark_bars, "open"))
+
     events.append(_event(state, time, EVENT_STAGES[4], "STAGE"))
+    open_gap_items: list[tuple[IsolatedPosition, FillEvent]] = []
     for pos in tuple(state.positions):
-        evidence = dependencies.maintenance_evidence_factory(pos, time)
-        reference = estimated_liquidation(pos, evidence, time)
+        reference = _maintenance_reference(dependencies, pos, time)
         if isinstance(reference, PathInvalidEvent):
             return _invalid_result(
                 state, reference.reason, time, events, fills, ledgers, trades, planning
@@ -415,30 +468,26 @@ def process_minute(
             fee_rate=cost.fee_rate,
             tick_size=cost.tick_size,
         )
-        try:
-            remaining = tuple(
-                item for item in state.positions if item.position_id != pos.position_id
-            )
-            state, entries, trade = apply_exit_fill(
-                state,
-                pos,
-                fill,
-                remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
-            )
-        except AccountInvariantError:
+        open_gap_items.append((pos, fill))
+
+    if open_gap_items:
+        closed_ids = {position.position_id for position, _ in open_gap_items}
+        remaining = tuple(item for item in state.positions if item.position_id not in closed_ids)
+        commit = apply_exit_batch(
+            state,
+            tuple(open_gap_items),
+            remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
+        )
+        if isinstance(commit, ExitBatchCommitFailure):
+            planning.append(commit)
             return _invalid_result(
-                state,
-                "ACCOUNT_INVARIANT_VIOLATION",
-                time,
-                events,
-                fills,
-                ledgers,
-                trades,
-                planning,
+                state, commit.reason, time, events, fills, ledgers, trades, planning
             )
-        fills.append(fill)
-        ledgers.extend(entries)
-        trades.append(trade)
+        state = commit.state
+        fills.extend(commit.fills)
+        ledgers.extend(commit.ledger_entries)
+        trades.extend(commit.trades)
+    for pos, _ in open_gap_items:
         events.append(_event(state, time, EVENT_STAGES[4], "PROTECTIVE_EXIT", pos.position_id))
         cancelled = tuple(
             intent
@@ -492,6 +541,7 @@ def process_minute(
                 trades,
                 planning,
             )
+        scheduled_items: list[tuple[IsolatedPosition, FillEvent]] = []
         for output in outputs:
             if isinstance(output, ExecutionRejection):
                 continue
@@ -516,30 +566,26 @@ def process_minute(
             reason = output.scheduled_exit_reason
             matched = dict(state.pending_exit_reason_matches).get(output.intent_id, (reason,))
             fill = make_scheduled_exit_fill(output, matched, reason)
-            try:
-                remaining = tuple(
-                    item for item in state.positions if item.position_id != pos.position_id
-                )
-                state, entries, trade = apply_exit_fill(
-                    state,
-                    pos,
-                    fill,
-                    remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
-                )
-            except AccountInvariantError:
+            scheduled_items.append((pos, fill))
+        if scheduled_items:
+            closed_ids = {position.position_id for position, _ in scheduled_items}
+            remaining = tuple(
+                item for item in state.positions if item.position_id not in closed_ids
+            )
+            commit = apply_exit_batch(
+                state,
+                tuple(scheduled_items),
+                remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
+            )
+            if isinstance(commit, ExitBatchCommitFailure):
+                planning.append(commit)
                 return _invalid_result(
-                    state,
-                    "ACCOUNT_INVARIANT_VIOLATION",
-                    time,
-                    events,
-                    fills,
-                    ledgers,
-                    trades,
-                    planning,
+                    state, commit.reason, time, events, fills, ledgers, trades, planning
                 )
-            fills.append(fill)
-            ledgers.extend(entries)
-            trades.append(trade)
+            state = commit.state
+            fills.extend(commit.fills)
+            ledgers.extend(commit.ledger_entries)
+            trades.extend(commit.trades)
         due_ids = {intent.intent_id for intent in due_exits}
         state = replace(
             state,
@@ -630,6 +676,10 @@ def process_minute(
         state = commit.state
         fills.extend(commit.fills)
         ledgers.extend(commit.ledger_entries)
+        state = commit_valuation(
+            state,
+            _mark_total(state.positions, minute.mark_bars, "open"),
+        )
         due_ids = {item.intent_id for item in due_entries}
         state = replace(
             state,
@@ -644,8 +694,7 @@ def process_minute(
     opening_wallet = state.wallet_balance
     trigger_map: list[tuple[IsolatedPosition, tuple[TriggerCandidate, ...], object]] = []
     for pos in tuple(state.positions):
-        evidence = dependencies.maintenance_evidence_factory(pos, time)
-        reference = estimated_liquidation(pos, evidence, time)
+        reference = _maintenance_reference(dependencies, pos, time)
         if isinstance(reference, PathInvalidEvent):
             return _invalid_result(
                 state, reference.reason, time, events, fills, ledgers, trades, planning
@@ -692,6 +741,7 @@ def process_minute(
         selected.append((pos, chosen, cost))
 
     events.append(_event(state, time, EVENT_STAGES[11], "STAGE"))
+    protective_items: list[tuple[IsolatedPosition, FillEvent]] = []
     for pos, chosen, cost in selected:
         if not any(item.position_id == pos.position_id for item in state.positions):
             continue
@@ -703,30 +753,25 @@ def process_minute(
             fee_rate=cost.fee_rate,
             tick_size=cost.tick_size,
         )
-        try:
-            remaining = tuple(
-                item for item in state.positions if item.position_id != pos.position_id
-            )
-            state, entries, trade = apply_exit_fill(
-                state,
-                pos,
-                fill,
-                remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "close"),
-            )
-        except AccountInvariantError:
+        protective_items.append((pos, fill))
+    if protective_items:
+        closed_ids = {position.position_id for position, _ in protective_items}
+        remaining = tuple(item for item in state.positions if item.position_id not in closed_ids)
+        commit = apply_exit_batch(
+            state,
+            tuple(protective_items),
+            remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "close"),
+        )
+        if isinstance(commit, ExitBatchCommitFailure):
+            planning.append(commit)
             return _invalid_result(
-                state,
-                "ACCOUNT_INVARIANT_VIOLATION",
-                time,
-                events,
-                fills,
-                ledgers,
-                trades,
-                planning,
+                state, commit.reason, time, events, fills, ledgers, trades, planning
             )
-        fills.append(fill)
-        ledgers.extend(entries)
-        trades.append(trade)
+        state = commit.state
+        fills.extend(commit.fills)
+        ledgers.extend(commit.ledger_entries)
+        trades.extend(commit.trades)
+    for pos, _ in protective_items:
         cancelled = tuple(
             intent
             for intent in state.pending_exit_intents
@@ -855,6 +900,7 @@ def process_minute(
         final_processed_time_utc_ms=time,
         flat_after_halt_time_utc_ms=flat_time,
     )
+    assert_account_snapshot_consistent(state)
     return MinuteResult(
         state,
         tuple(events),
@@ -991,26 +1037,10 @@ def run_simulation(
                 equity_points=(),
                 planning_outputs=(*terminal.planning_outputs, invalid_event),
             )
-        path_result = PathResult(
-            path_state=state.path_state,
-            final_processed_time_utc_ms=state.final_processed_time_utc_ms
-            if state.final_processed_time_utc_ms is not None
-            else config.simulation_start_utc_ms,
-            invalid_reason=(
-                next(
-                    (
-                        item.reason
-                        for result in reversed(minute_results)
-                        for item in result.planning_outputs
-                        if isinstance(item, PathInvalidEvent)
-                    ),
-                    None,
-                )
-            ),
-            halt_trigger_time_utc_ms=state.halt_trigger_time_utc_ms,
-            halt_reason=state.halt_reason,
-            entry_disabled=state.path_state is PathState.HALTED,
-            flat_after_halt_time_utc_ms=state.flat_after_halt_time_utc_ms,
+        path_result = build_path_result(
+            state,
+            minute_results,
+            config.simulation_start_utc_ms,
         )
         paths.append(PathRun(path_kind, tuple(minute_results), path_result))
     if len(paths) > 2:

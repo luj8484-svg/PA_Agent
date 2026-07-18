@@ -113,3 +113,15 @@ HALT 排空。TL-05、TL-18、TL-19、TL-22 必须分别绑定其完整同刻/�
 - 24 个 Timeline 必须固定 Canonical 输入、Event/Ledger/Trade/Equity/PathResult 和最终 hash；TL-23与TL-24必须拥有不同输入和最终hash。
 - 默认测试不得创建 QApplication、API Key 窗口、网络连接或交易请求。
 - 完整 run 必须动态调用 2B planner；只允许局部 Golden 以 `LOCAL_PLAN_FIXTURE_ONLY` 注入 Plan。
+
+## D. Final source-review acceptance additions
+
+| Acceptance surface | Required executable evidence |
+|---|---|
+| Production context closure | Config/catalog/dependency/execution/version/Candidate substitution negatives fail before path construction |
+| Input identity closure | catalog, target-open, watermark, execution config and actual planner/2A/2B/2C hashes affect the run identity |
+| Scheduled exit projection | funding-only mutation succeeds; quantity mutation returns `POSITION_SNAPSHOT_CHANGED`; full real Candidate-to-exit chain succeeds |
+| Terminal valuation | funding-then-evidence-failure and entry-then-evidence-failure return consistent INVALID snapshots |
+| Exit batch atomicity | BTC/ETH reverse input order has identical wallet/equity/peak/ledger/fill output; any member failure rolls back all |
+| Stop/TP full Golden | real Engine, Position, Fill, Ledger, Trade, Equity and path-specific PathResult are content-addressed |
+| CI | CPython 3.12.13 runs research CLI/data/backtest, 2B registry, Ruff, format and compileall without GUI/legacy E2E |

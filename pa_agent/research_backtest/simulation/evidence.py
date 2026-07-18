@@ -336,6 +336,9 @@ def build_exit_inputs_from_engine(
     evidence: PlanningEvidenceFromEngine,
 ):
     from pa_agent.research_backtest.planning.exits import ExitPlanningInputs
+    from pa_agent.research_backtest.simulation.positions import (
+        exit_execution_position_snapshot,
+    )
 
     target = intent.target_execution_time_utc_ms
     if target != evidence.minute.minute_open_utc_ms:
@@ -380,7 +383,9 @@ def build_exit_inputs_from_engine(
         watermark=watermark,
         contract=contract,
         cost=cost,
-        target_position_snapshot_hash=intent.position_snapshot_hash,
+        target_position_snapshot_hash=exit_execution_position_snapshot(
+            position
+        ).snapshot_content_hash,
         code_commit=evidence.catalog.code_commit,
         dependency_lock_hash=evidence.catalog.dependency_lock_hash,
         stage=evidence.catalog.stage,
@@ -391,6 +396,8 @@ def production_planning_evidence_factory(catalog: SimulationEvidenceCatalog):
     def factory(state: EngineState, minute: MinuteInputSlice) -> PlanningEvidenceFromEngine:
         return build_planning_evidence_from_engine(state=state, minute=minute, catalog=catalog)
 
+    factory.catalog_id = catalog.catalog_id  # type: ignore[attr-defined]
+    factory.catalog_content_hash = catalog.catalog_content_hash  # type: ignore[attr-defined]
     return factory
 
 
@@ -424,6 +431,8 @@ def production_execution_cost_factory(catalog: SimulationEvidenceCatalog):
             contract_coverage_id=contract.coverage_id,
         )
 
+    factory.catalog_id = catalog.catalog_id  # type: ignore[attr-defined]
+    factory.catalog_content_hash = catalog.catalog_content_hash  # type: ignore[attr-defined]
     return factory
 
 
@@ -440,4 +449,6 @@ def production_maintenance_evidence_factory(catalog: SimulationEvidenceCatalog):
             "maintenance",
         )
 
+    factory.catalog_id = catalog.catalog_id  # type: ignore[attr-defined]
+    factory.catalog_content_hash = catalog.catalog_content_hash  # type: ignore[attr-defined]
     return factory

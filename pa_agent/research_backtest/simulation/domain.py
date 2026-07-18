@@ -14,6 +14,7 @@ from pa_agent.research_backtest.domain.enums import MarginMode, PositionMode
 from pa_agent.research_backtest.simulation.versions import (
     INTRAMINUTE_HALT_POLICY_VERSION,
     LIQUIDATION_MODEL_VERSION,
+    MINUTE_ENGINE_VERSION,
     MINUTE_EVENT_ORDER_VERSION,
     SIMULATION_CONFIG_VERSION,
 )
@@ -53,6 +54,7 @@ class SimulationConfig:
     two_a_version: str
     two_b_planner_version: str
     two_b_planner_config_hash: str
+    two_c_engine_version: str
     code_commit: str
     dependency_lock_hash: str
 
@@ -112,6 +114,7 @@ def make_simulation_config(
     two_a_version: str,
     two_b_planner_version: str,
     two_b_planner_config_hash: str,
+    two_c_engine_version: str = MINUTE_ENGINE_VERSION,
     code_commit: str,
     dependency_lock_hash: str,
 ) -> SimulationConfig:
@@ -139,6 +142,7 @@ def make_simulation_config(
         "two_a_version": two_a_version,
         "two_b_planner_version": two_b_planner_version,
         "two_b_planner_config_hash": two_b_planner_config_hash,
+        "two_c_engine_version": two_c_engine_version,
         "code_commit": code_commit,
         "dependency_lock_hash": dependency_lock_hash,
     }

@@ -128,33 +128,54 @@ def test_conservative_uses_lowest_minute_end_equity() -> None:
 
 
 def test_stop_tp_ambiguity_produces_two_canonical_path_decisions() -> None:
-    from pa_agent.research_backtest.simulation.ambiguity import resolve_all_paths
-    from pa_agent.research_backtest.simulation.domain import PathKind
+    from pa_agent.research_backtest.simulation.domain import PathKind, initial_engine_state
+    from pa_agent.research_backtest.simulation.engine import build_path_result, process_minute
+    from tests.research_backtest.simulation.test_minute_engine_output import (
+        config,
+        dependencies,
+        minute,
+    )
 
-    successors = resolve_all_paths(
-        (PathKind.BASELINE, PathKind.CONSERVATIVE),
-        object(),
-        (candidate("STOP", "99", "9900"), candidate("TAKE_PROFIT", "101", "10100")),
+    pos = replace(
+        position(),
+        stop_trigger_price=Decimal("80"),
+        take_profit_trigger_price=Decimal("110"),
     )
-    assert tuple(item.path_kind for item in successors) == (
-        PathKind.BASELINE,
-        PathKind.CONSERVATIVE,
+    source = minute()
+    trade = replace(source.trade_bars[0], low=Decimal("79"), high=Decimal("111"))
+    mark = replace(source.mark_bars[0], low=Decimal("95"), high=Decimal("105"))
+    value = replace(source, trade_bars=(trade,), mark_bars=(mark,))
+    results = []
+    path_results = []
+    for path_kind in (PathKind.BASELINE, PathKind.CONSERVATIVE):
+        state = replace(
+            initial_engine_state(config(), path_kind),
+            positions=(pos,),
+            locked_initial_margin=pos.initial_margin,
+            locked_fee_reserve=pos.remaining_fee_reserve,
+            locked_funding_reserve=pos.remaining_funding_reserve,
+        )
+        result = process_minute(state, value, config(), dependencies())
+        results.append(result)
+        path_results.append(build_path_result(result.state, (result,), 0))
+
+    assert tuple(result.fills[0].plan_id.rsplit(":", 1)[-1] for result in results) == (
+        "TAKE_PROFIT",
+        "STOP",
     )
-    assert all(item.selected_candidate.kind.value == "STOP" for item in successors)
+    assert results[0].fills != results[1].fills
+    assert results[0].equity_points != results[1].equity_points
+    assert path_results[0] != path_results[1]
     from tests.research_backtest.simulation.golden_support import assert_full_golden
 
-    inputs = (
-        candidate("STOP", "99", "9900"),
-        candidate("TAKE_PROFIT", "101", "10100"),
-    )
     assert_full_golden(
         "STOP_TP_AMBIGUITY_TWO_PATHS",
-        input_fixture=inputs,
-        event_sequence=successors,
-        ledger=(),
-        fill_trade=(),
-        equity=tuple(item.selected_candidate.minute_end_equity for item in successors),
-        path_result=successors,
+        input_fixture=(pos, value, config()),
+        event_sequence=tuple(result.events for result in results),
+        ledger=tuple(result.ledger_entries for result in results),
+        fill_trade=tuple({"fills": result.fills, "trades": result.trades} for result in results),
+        equity=tuple(result.equity_points for result in results),
+        path_result=tuple(path_results),
     )
 
 
