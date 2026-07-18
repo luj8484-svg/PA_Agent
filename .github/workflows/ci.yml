@@ -10,6 +10,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    env:
+      PYTEST_ADDOPTS: "-p no:pytest-qt"
     steps:
       - uses: actions/checkout@v4
 
