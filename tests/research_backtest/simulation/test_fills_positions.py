@@ -163,13 +163,119 @@ def test_exit_releases_all_locks_and_realizes_pnl() -> None:
     fill = make_scheduled_exit_fill(
         plan, (ScheduledExitReason.TIME_EXIT,), ScheduledExitReason.TIME_EXIT
     )
-    closed, entries, trade = apply_exit_fill(opened, position, fill)
+    closed, entries, trade = apply_exit_fill(
+        opened, position, fill, remaining_unrealized_pnl=Decimal("0")
+    )
     assert closed.positions == ()
     assert closed.locked_initial_margin == Decimal("0")
     assert closed.locked_fee_reserve == Decimal("0")
     assert closed.locked_funding_reserve == Decimal("0")
     assert trade.net_pnl == trade.gross_pnl - trade.entry_fee - trade.exit_fee + trade.funding
     assert len(entries) == 5
+
+
+def test_profitable_exit_does_not_double_count_stale_unrealized_in_peak() -> None:
+    from pa_agent.research_backtest.simulation.fills import (
+        apply_exit_fill,
+        make_scheduled_exit_fill,
+    )
+    from pa_agent.research_backtest.simulation.positions import IsolatedPosition
+
+    plan = exit_plan()
+    position = IsolatedPosition(
+        position_id=plan.position_id,
+        symbol=plan.symbol,
+        side=plan.position_side,
+        quantity=plan.quantity,
+        entry_time_utc_ms=0,
+        entry_price=Decimal("100"),
+        initial_margin=plan.quantity * Decimal("100"),
+        isolated_margin_balance=plan.quantity * Decimal("100"),
+        stop_trigger_price=Decimal("90"),
+        take_profit_trigger_price=Decimal("120"),
+        remaining_fee_reserve=plan.expected_exit_fee,
+        remaining_funding_reserve=Decimal("2"),
+        planned_funding_slice=Decimal("1"),
+        remaining_funding_events=2,
+        origin_plan_id="entry-plan",
+        origin_candidate_id=plan.origin_candidate_id,
+        maximum_exit_time_utc_ms=172_800_000,
+    )
+    opened = replace(
+        initial_state(),
+        positions=(position,),
+        locked_initial_margin=position.initial_margin,
+        locked_fee_reserve=position.remaining_fee_reserve,
+        locked_funding_reserve=position.remaining_funding_reserve,
+        unrealized_pnl=Decimal("28.8756"),
+        equity=Decimal("10028.8756"),
+        peak_equity=Decimal("10028.8756"),
+    )
+    fill = make_scheduled_exit_fill(
+        plan, (ScheduledExitReason.TIME_EXIT,), ScheduledExitReason.TIME_EXIT
+    )
+    closed, _, _ = apply_exit_fill(opened, position, fill, remaining_unrealized_pnl=Decimal("0"))
+    assert closed.equity == closed.wallet_balance
+    assert closed.peak_equity == opened.peak_equity
+
+
+def test_partial_exit_preserves_remaining_position_unrealized_and_peak() -> None:
+    from pa_agent.research_backtest.simulation.fills import (
+        apply_exit_fill,
+        make_scheduled_exit_fill,
+    )
+    from pa_agent.research_backtest.simulation.positions import IsolatedPosition
+
+    plan = exit_plan()
+    btc = IsolatedPosition(
+        position_id=plan.position_id,
+        symbol="BTCUSDT",
+        side=plan.position_side,
+        quantity=plan.quantity,
+        entry_time_utc_ms=0,
+        entry_price=Decimal("100"),
+        initial_margin=plan.quantity * Decimal("100"),
+        isolated_margin_balance=plan.quantity * Decimal("100"),
+        stop_trigger_price=Decimal("90"),
+        take_profit_trigger_price=Decimal("120"),
+        remaining_fee_reserve=plan.expected_exit_fee,
+        remaining_funding_reserve=Decimal("2"),
+        planned_funding_slice=Decimal("1"),
+        remaining_funding_events=2,
+        origin_plan_id="entry-plan",
+        origin_candidate_id=plan.origin_candidate_id,
+        maximum_exit_time_utc_ms=172_800_000,
+    )
+    eth = replace(
+        btc,
+        position_id="position-eth",
+        symbol="ETHUSDT",
+        origin_plan_id="entry-plan-eth",
+    )
+    remaining_unrealized = Decimal("-50")
+    opened = replace(
+        initial_state(),
+        positions=(btc, eth),
+        locked_initial_margin=btc.initial_margin + eth.initial_margin,
+        locked_fee_reserve=btc.remaining_fee_reserve + eth.remaining_fee_reserve,
+        locked_funding_reserve=btc.remaining_funding_reserve + eth.remaining_funding_reserve,
+        unrealized_pnl=Decimal("-25"),
+        equity=Decimal("9975"),
+        peak_equity=Decimal("10000"),
+    )
+    fill = make_scheduled_exit_fill(
+        plan, (ScheduledExitReason.TIME_EXIT,), ScheduledExitReason.TIME_EXIT
+    )
+    closed, _, _ = apply_exit_fill(
+        opened,
+        btc,
+        fill,
+        remaining_unrealized_pnl=remaining_unrealized,
+    )
+    assert closed.positions == (eth,)
+    assert closed.unrealized_pnl == remaining_unrealized
+    assert closed.equity == closed.wallet_balance + remaining_unrealized
+    assert closed.peak_equity == opened.peak_equity
 
 
 def test_stable_entry_batch_order() -> None:

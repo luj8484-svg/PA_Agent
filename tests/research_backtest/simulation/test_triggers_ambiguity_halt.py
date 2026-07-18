@@ -127,6 +127,37 @@ def test_conservative_uses_lowest_minute_end_equity() -> None:
     assert chosen.kind.value == "STOP"
 
 
+def test_stop_tp_ambiguity_produces_two_canonical_path_decisions() -> None:
+    from pa_agent.research_backtest.simulation.ambiguity import resolve_all_paths
+    from pa_agent.research_backtest.simulation.domain import PathKind
+
+    successors = resolve_all_paths(
+        (PathKind.BASELINE, PathKind.CONSERVATIVE),
+        object(),
+        (candidate("STOP", "99", "9900"), candidate("TAKE_PROFIT", "101", "10100")),
+    )
+    assert tuple(item.path_kind for item in successors) == (
+        PathKind.BASELINE,
+        PathKind.CONSERVATIVE,
+    )
+    assert all(item.selected_candidate.kind.value == "STOP" for item in successors)
+    from tests.research_backtest.simulation.golden_support import assert_full_golden
+
+    inputs = (
+        candidate("STOP", "99", "9900"),
+        candidate("TAKE_PROFIT", "101", "10100"),
+    )
+    assert_full_golden(
+        "STOP_TP_AMBIGUITY_TWO_PATHS",
+        input_fixture=inputs,
+        event_sequence=successors,
+        ledger=(),
+        fill_trade=(),
+        equity=tuple(item.selected_candidate.minute_end_equity for item in successors),
+        path_result=successors,
+    )
+
+
 def test_equal_ambiguity_uses_liquidation_stop_tp_priority() -> None:
     from pa_agent.research_backtest.simulation.ambiguity import resolve_ambiguity
     from pa_agent.research_backtest.simulation.domain import PathKind

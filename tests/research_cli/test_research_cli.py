@@ -68,12 +68,14 @@ def test_validate_environment_imports_only_research_roots() -> None:
     result = _run("-m", "pa_agent.research_cli", "validate-environment")
     assert result.returncode == 0, result.stderr
     output = result.stdout
+    assert "implementation=CPython" in output
+    assert "version=3.12.13" in output
+    assert "status=PASS" in output
     assert "research_data=OK" in output
     assert "research_backtest=OK" in output
     assert "llm_api_key_required=no" in output
     assert "exchange_api_key_required=no" in output
     assert "network_access=not_performed" in output
-    assert "python=" in output
     assert "dependency.pa-agent=" in output
     assert "dependency.numpy=" in output
     assert "dependency.pandas=" in output

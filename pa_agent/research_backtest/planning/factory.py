@@ -225,6 +225,9 @@ def _validate_chain(inputs: EntryPlanningInputs) -> None:
 def build_entry_execution_plan(
     inputs: EntryPlanningInputs,
 ) -> EntryExecutionPlan | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     target = inputs.intent.target_execution_time_utc_ms
     reasons: list[ExecutionRejectionReason] = []
     if inputs.target_open is None:

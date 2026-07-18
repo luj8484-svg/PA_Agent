@@ -30,6 +30,13 @@ class SimulationProjection:
     path_result: PathResult
 
 
+@dataclass(frozen=True, slots=True)
+class StateSnapshot:
+    event_time_utc_ms: int
+    path_kind: object
+    state: object
+
+
 def terminal_invalid_projection(event: PathInvalidEvent) -> SimulationProjection:
     result = PathResult(
         path_state=PathState.INVALID,
@@ -42,6 +49,11 @@ def terminal_invalid_projection(event: PathInvalidEvent) -> SimulationProjection
 @dataclass(frozen=True, slots=True)
 class OutputManifest:
     schema_version: str
+    simulation_run_id: str
+    input_identity_id: str
+    input_identity_hash: str
+    config_id: str
+    config_hash: str
     result_content_hash: str
     path_count: int
     minute_result_count: int
@@ -52,6 +64,11 @@ def output_manifest(result: object) -> OutputManifest:
     paths = result.paths
     return OutputManifest(
         schema_version="SIMULATION_OUTPUT_MANIFEST_V1",
+        simulation_run_id=result.simulation_run_id,
+        input_identity_id=result.simulation_input_identity.input_identity_id,
+        input_identity_hash=result.simulation_input_identity_hash,
+        config_id=result.config_id,
+        config_hash=result.config_content_hash,
         result_content_hash=canonical_sha256(result),
         path_count=len(paths),
         minute_result_count=sum(len(path.minute_results) for path in paths),
@@ -81,6 +98,7 @@ def write_canonical_result(result: object, output_directory: str | Path) -> Outp
         "ledger.jsonl": [],
         "planning.jsonl": [],
         "positions.jsonl": [],
+        "state_snapshots.jsonl": [],
         "trades.jsonl": [],
         "equity.jsonl": [],
         "path_results.jsonl": [],
@@ -98,6 +116,13 @@ def write_canonical_result(result: object, output_directory: str | Path) -> Outp
                     "positions": minute.state.positions,
                 }
             )
+            rows["state_snapshots.jsonl"].append(
+                StateSnapshot(
+                    event_time_utc_ms=minute.state.final_processed_time_utc_ms,
+                    path_kind=path.path_kind,
+                    state=minute.state,
+                )
+            )
             rows["trades.jsonl"].extend(minute.trades)
             rows["equity.jsonl"].extend(minute.equity_points)
         rows["path_results.jsonl"].append(path.path_result)
@@ -110,11 +135,16 @@ def write_canonical_result(result: object, output_directory: str | Path) -> Outp
 
     base = output_manifest(result)
     manifest = OutputManifest(
-        base.schema_version,
-        base.result_content_hash,
-        base.path_count,
-        base.minute_result_count,
-        tuple(hashes),
+        schema_version=base.schema_version,
+        simulation_run_id=base.simulation_run_id,
+        input_identity_id=base.input_identity_id,
+        input_identity_hash=base.input_identity_hash,
+        config_id=base.config_id,
+        config_hash=base.config_hash,
+        result_content_hash=base.result_content_hash,
+        path_count=base.path_count,
+        minute_result_count=base.minute_result_count,
+        file_hashes=tuple(hashes),
     )
     _atomic_write(directory / "manifest.json", canonical_dumps(manifest) + "\n")
     return manifest

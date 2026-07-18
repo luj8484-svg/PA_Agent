@@ -70,7 +70,24 @@ def test_fee_changes_wallet_once() -> None:
 
     result = reduce_ledger(state(), (entry("ENTRY_FEE", "-10"),))
     assert result.wallet_balance == Decimal("9990")
-    assert result.equity == Decimal("9990")
+    assert result.equity == Decimal("10000")
+    assert result.peak_equity == Decimal("10000")
+
+
+def test_ledger_does_not_promote_stale_unrealized_pnl_to_peak() -> None:
+    from pa_agent.research_backtest.simulation.ledger import reduce_ledger
+
+    stale_mark = replace(
+        state(),
+        unrealized_pnl=Decimal("100"),
+        equity=Decimal("10100"),
+        peak_equity=Decimal("10100"),
+    )
+    funded = reduce_ledger(stale_mark, (entry("FUNDING", "25", "funding-income"),))
+    assert funded.wallet_balance == Decimal("10025")
+    assert funded.unrealized_pnl == Decimal("100")
+    assert funded.equity == Decimal("10100")
+    assert funded.peak_equity == Decimal("10100")
 
 
 def test_margin_lock_changes_available_not_wallet() -> None:

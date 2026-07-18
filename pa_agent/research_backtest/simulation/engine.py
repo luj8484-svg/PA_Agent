@@ -6,7 +6,8 @@ from decimal import Decimal
 from itertools import pairwise
 
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
-from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
+from pa_agent.research_backtest.domain.enums import ResearchStage, ScheduledExitReason, Side
+from pa_agent.research_backtest.domain.rejections import ExecutionRejection
 from pa_agent.research_backtest.simulation.ambiguity import resolve_ambiguity
 from pa_agent.research_backtest.simulation.domain import (
     EngineState,
@@ -16,11 +17,11 @@ from pa_agent.research_backtest.simulation.domain import (
     initial_engine_state,
 )
 from pa_agent.research_backtest.simulation.fills import (
+    EntryBatchCommitFailure,
     FillEvent,
     TradeRecord,
-    apply_entry_fill,
+    apply_entry_batch,
     apply_exit_fill,
-    make_entry_fill,
     make_protective_exit_fill,
     make_scheduled_exit_fill,
     stable_entry_plan_order,
@@ -63,7 +64,10 @@ from pa_agent.research_backtest.simulation.planning import (
 )
 from pa_agent.research_backtest.simulation.positions import (
     IsolatedPosition,
-    position_from_entry_plan,
+)
+from pa_agent.research_backtest.simulation.rejections import (
+    RejectionPolicyAction,
+    apply_rejection_policy,
 )
 from pa_agent.research_backtest.simulation.triggers import (
     TriggerCandidate,
@@ -111,6 +115,7 @@ class EngineDependencies:
     maintenance_evidence_factory: Callable[[IsolatedPosition, int], object]
     execution_cost_factory: Callable[[str, int], object]
     exit_delay_minutes: int | None = None
+    evidence_catalog: object | None = None
 
     def __post_init__(self) -> None:
         configured = self.exit_delay_minutes
@@ -152,6 +157,9 @@ class PathRun:
 
 @dataclass(frozen=True, slots=True)
 class SimulationResult:
+    simulation_run_id: str
+    simulation_input_identity: object
+    simulation_input_identity_hash: str
     config_id: str
     config_content_hash: str
     paths: tuple[PathRun, ...]
@@ -220,7 +228,7 @@ def _equity_point(state: EngineState, time: int) -> EquityPoint:
 
 def _invalid_result(
     state: EngineState,
-    reason: str,
+    reason: str | PathInvalidEvent,
     time: int,
     events: list[SimulationEvent],
     fills: list[FillEvent],
@@ -228,12 +236,15 @@ def _invalid_result(
     trades: list[TradeRecord],
     planning: list[object],
 ) -> MinuteResult:
+    invalid_event = (
+        reason if isinstance(reason, PathInvalidEvent) else PathInvalidEvent(time, reason)
+    )
     invalid = replace(
         state,
         path_state=PathState.INVALID,
         final_processed_time_utc_ms=time,
     )
-    planning.append(PathInvalidEvent(time, reason))
+    planning.append(invalid_event)
     return MinuteResult(
         invalid,
         tuple(events),
@@ -279,6 +290,9 @@ def process_minute(
     config: SimulationConfig,
     dependencies: EngineDependencies,
 ) -> MinuteResult:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     time = minute.minute_open_utc_ms
     events: list[SimulationEvent] = []
     fills: list[FillEvent] = []
@@ -402,7 +416,15 @@ def process_minute(
             tick_size=cost.tick_size,
         )
         try:
-            state, entries, trade = apply_exit_fill(state, pos, fill)
+            remaining = tuple(
+                item for item in state.positions if item.position_id != pos.position_id
+            )
+            state, entries, trade = apply_exit_fill(
+                state,
+                pos,
+                fill,
+                remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
+            )
         except AccountInvariantError:
             return _invalid_result(
                 state,
@@ -457,7 +479,22 @@ def process_minute(
         evidence = dependencies.planning_evidence_factory(state, minute)
         outputs = plan_due_exits(state, due_exits, time, evidence, dependencies.planners)
         planning.extend(outputs)
+        exit_rejections = tuple(item for item in outputs if isinstance(item, ExecutionRejection))
+        exit_policy = apply_rejection_policy(exit_rejections, ResearchStage.BACKTEST)
+        if exit_policy.action is not RejectionPolicyAction.CONTINUE:
+            return _invalid_result(
+                state,
+                exit_policy.path_invalid_event(time),
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
         for output in outputs:
+            if isinstance(output, ExecutionRejection):
+                continue
             if not hasattr(output, "expected_exit_fill_price"):
                 rejection_reason = getattr(output, "reason", "UNKNOWN")
                 rejection_code = getattr(rejection_reason, "value", str(rejection_reason))
@@ -480,7 +517,15 @@ def process_minute(
             matched = dict(state.pending_exit_reason_matches).get(output.intent_id, (reason,))
             fill = make_scheduled_exit_fill(output, matched, reason)
             try:
-                state, entries, trade = apply_exit_fill(state, pos, fill)
+                remaining = tuple(
+                    item for item in state.positions if item.position_id != pos.position_id
+                )
+                state, entries, trade = apply_exit_fill(
+                    state,
+                    pos,
+                    fill,
+                    remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "open"),
+                )
             except AccountInvariantError:
                 return _invalid_result(
                     state,
@@ -542,6 +587,20 @@ def process_minute(
         if outcome is None:
             raise AssertionError("due entry batch produced no planning outcome")
         planning.extend(outcome.audit_objects)
+        entry_policy = apply_rejection_policy(
+            getattr(outcome, "execution_rejections", ()), ResearchStage.BACKTEST
+        )
+        if entry_policy.action is not RejectionPolicyAction.CONTINUE:
+            return _invalid_result(
+                state,
+                entry_policy.path_invalid_event(time),
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
         try:
             validate_entry_batch_post_plan(outcome, available_balance=available_balance(state))
         except EntryBatchPostPlanInvariantError:
@@ -555,13 +614,22 @@ def process_minute(
                 trades,
                 planning,
             )
-        plans = stable_entry_plan_order(outcome.plans)
-        for plan in plans:
-            fill = make_entry_fill(plan)
-            pos = position_from_entry_plan(plan)
-            state, entries = apply_entry_fill(state, fill, pos)
-            fills.append(fill)
-            ledgers.extend(entries)
+        commit = apply_entry_batch(state, stable_entry_plan_order(outcome.plans))
+        if isinstance(commit, EntryBatchCommitFailure):
+            planning.append(commit)
+            return _invalid_result(
+                state,
+                commit.reason,
+                time,
+                events,
+                fills,
+                ledgers,
+                trades,
+                planning,
+            )
+        state = commit.state
+        fills.extend(commit.fills)
+        ledgers.extend(commit.ledger_entries)
         due_ids = {item.intent_id for item in due_entries}
         state = replace(
             state,
@@ -636,7 +704,15 @@ def process_minute(
             tick_size=cost.tick_size,
         )
         try:
-            state, entries, trade = apply_exit_fill(state, pos, fill)
+            remaining = tuple(
+                item for item in state.positions if item.position_id != pos.position_id
+            )
+            state, entries, trade = apply_exit_fill(
+                state,
+                pos,
+                fill,
+                remaining_unrealized_pnl=_mark_total(remaining, minute.mark_bars, "close"),
+            )
         except AccountInvariantError:
             return _invalid_result(
                 state,
@@ -794,7 +870,27 @@ def run_simulation(
     inputs: SimulationInputs,
     config: SimulationConfig,
     dependencies: EngineDependencies,
+    input_identity: object | None = None,
 ) -> SimulationResult:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+    from pa_agent.research_backtest.simulation.evidence import (
+        empty_simulation_evidence_catalog,
+    )
+    from pa_agent.research_backtest.simulation.identity import (
+        SimulationInputIdentity,
+        build_simulation_input_identity,
+        simulation_run_id,
+        verify_simulation_input_identity,
+    )
+
+    assert_deterministic_research_runtime()
+    catalog = dependencies.evidence_catalog or empty_simulation_evidence_catalog(config)
+    actual_identity = build_simulation_input_identity(inputs, catalog)
+    if input_identity is not None:
+        if not isinstance(input_identity, SimulationInputIdentity):
+            raise TypeError("run input identity must be SimulationInputIdentity")
+        verify_simulation_input_identity(input_identity, inputs, catalog)
+        actual_identity = input_identity
     minute_opens = tuple(item.minute_open_utc_ms for item in inputs.minute_slices)
     if (
         not minute_opens
@@ -826,6 +922,31 @@ def run_simulation(
                 if dependencies.entry_intent_factory is None:
                     raise ValueError("Candidate stream requires an EntryIntent factory")
                 created = tuple(dependencies.entry_intent_factory(item) for item in visible)
+                candidate_rejections = tuple(
+                    item for item in created if isinstance(item, ExecutionRejection)
+                )
+                candidate_policy = apply_rejection_policy(
+                    candidate_rejections, ResearchStage.BACKTEST
+                )
+                if candidate_policy.action is not RejectionPolicyAction.CONTINUE:
+                    invalid_event = candidate_policy.path_invalid_event(minute.minute_open_utc_ms)
+                    state = replace(
+                        state,
+                        path_state=PathState.INVALID,
+                        final_processed_time_utc_ms=minute.minute_open_utc_ms,
+                    )
+                    minute_results.append(
+                        MinuteResult(
+                            state,
+                            (),
+                            (),
+                            (),
+                            (),
+                            (),
+                            (*created, invalid_event),
+                        )
+                    )
+                    break
                 intents = tuple(
                     item for item in created if hasattr(item, "target_execution_time_utc_ms")
                 )
@@ -894,4 +1015,11 @@ def run_simulation(
         paths.append(PathRun(path_kind, tuple(minute_results), path_result))
     if len(paths) > 2:
         raise AssertionError("active simulation path count exceeded two")
-    return SimulationResult(config.config_id, config.config_content_hash, tuple(paths))
+    return SimulationResult(
+        simulation_run_id(actual_identity, config),
+        actual_identity,
+        actual_identity.input_identity_content_hash,
+        config.config_id,
+        config.config_content_hash,
+        tuple(paths),
+    )

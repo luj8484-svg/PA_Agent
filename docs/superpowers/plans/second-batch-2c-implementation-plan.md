@@ -6,11 +6,12 @@
 
 **Architecture:** A single-threaded pure reducer executes `MINUTE_EVENT_ORDER_V2`. Complete runs consume Candidates and evidence, not future-state Plan files. At each target minute the engine constructs one shared account/evidence bundle and invokes the existing 2B Sizing→Batch→Scaling→Plan pure-function chain exactly once for all due BTC/ETH Intents. Economic state changes only through Ledger reduction. BASELINE and CONSERVATIVE exist from simulation start and remain exactly two stable identities.
 
-**Tech Stack:** Python 3.11, frozen slotted dataclasses, Decimal, pytest, Hypothesis, existing 2A/2B Canonical and planning utilities.
+**Tech Stack:** exact CPython 3.12.13 (`DETERMINISTIC_RESEARCH_RUNTIME_V1`), frozen slotted dataclasses, Decimal, pytest, Hypothesis, existing 2A/2B Canonical and planning utilities.
 
 ## Global constraints
 
-- Scope is exactly 60 Requirements, 24 Timeline Golden fixtures, 24 Property Registry IDs mapped to 9 actual Property functions, and 34 red-team scenarios in the frozen package.
+- Scope is exactly 60 Requirements, 24 Timeline Registry entries, 6 full Canonical Goldens, 24 Property Registry IDs mapped to 9 actual Property functions, and 34 red-team scenarios in the frozen package.
+- Final closeout order is runtime guard, disposition execution, mark-based valuation, atomic Entry batch, run/output identity, production evidence bridge, then Registry/Golden verification. No stage may emit partial economic output after a fail-closed result.
 - No GUI, LLM, API Key, authentication, HTTP/socket client, `create_order`, paper/live automation, 2D performance analytics, walk-forward, OOS, or parameter grid.
 - 2C calls but never copies or alters 2B planning formulas. Candidate/Intent/Plan Canonical bytes are immutable.
 - Complete run input contains Candidates/evidence/SimulationConfig; direct Plan injection exists only in isolated fixtures marked `LOCAL_PLAN_FIXTURE_ONLY`.

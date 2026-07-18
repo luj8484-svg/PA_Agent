@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import platform
-
 STRATEGY_ID = "BTC_ETH_PA_STRATEGY"
 STRATEGY_VERSION = "BTC_ETH_PA_STRATEGY_V1_1"
 STRATEGY_CANDIDATE_SCHEMA_VERSION = "STRATEGY_CANDIDATE_SCHEMA_V1"
@@ -66,11 +64,6 @@ LOCKED_PYTHON_VERSION = "3.12.13"
 
 
 def assert_runtime_lock() -> None:
-    implementation = platform.python_implementation()
-    version = platform.python_version()
-    if (implementation, version) != (LOCKED_PYTHON_IMPLEMENTATION, LOCKED_PYTHON_VERSION):
-        raise RuntimeError(
-            "INDICATOR_CONFIG_V1 requires "
-            f"{LOCKED_PYTHON_IMPLEMENTATION} {LOCKED_PYTHON_VERSION}; "
-            f"received {implementation} {version}"
-        )
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()

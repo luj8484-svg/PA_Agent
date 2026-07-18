@@ -2,6 +2,23 @@
 
 状态：`FROZEN_FOR_TDD_IMPLEMENTATION`
 
+确定性运行时冻结为 `DETERMINISTIC_RESEARCH_RUNTIME_V1 = CPython 3.12.13`。2A、2B、
+2C 的 Candidate、Plan 与 Simulation 在其他解释器或补丁版本上必须 fail closed；通用旧
+GUI 包的 `Python >=3.11` 声明不构成研究运行时授权。
+
+最终验收严格区分 24 条 `TIMELINE_REGISTRY_V1` 追踪记录和 6 个
+`TIMELINE_FULL_GOLDENS_V1` 完整 Canonical Golden。后者冻结 input、event sequence、
+ledger、fill/trade、equity、PathResult 哈希；前者不得称为 Golden fixture。
+
+最终源码语义同时冻结如下：`ExecutionRejection.disposition` 是唯一拒绝控制源；
+`CANDIDATE_REJECTED` 保留证据并继续，`EXECUTION_PATH_INVALID` 与
+`EXPERIMENT_INVALID` 在任何 Fill 前终止整批。Ledger reducer 只处理 wallet、locks、
+reserve 与 consumed identity；equity/peak 仅在带当前 mark 的估值步骤更新，部分平仓后按
+全部剩余仓位重估。Entry batch 先在临时不可变状态完整预演，再全有或全无提交。
+`SimulationResult`、`OutputManifest` 和逐分钟 `state_snapshots.jsonl` 必须绑定实际输入身份、
+配置及输出哈希。生产 planner 默认从当前 `EngineState`、本分钟数据及版本化 evidence catalog
+构造 2B 输入，不接受未来状态或预制 Sizing/Scaling/Plan。
+
 父基线：`b07cd9e7dd56cfb628400ef0878c6610d4d6b894`
 
 目标：以确定性的 UTC 1 分钟事件闭环，把 2A `StrategyCandidate` 在目标分钟调用 2B 纯规划器生成的 Plan，转化为可审计的历史模拟成交、逐仓仓位、账本、交易、权益和路径结果。

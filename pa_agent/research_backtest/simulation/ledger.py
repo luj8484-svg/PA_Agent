@@ -70,9 +70,7 @@ def available_balance(state: EngineState) -> Decimal:
     )
 
 
-def validate_account_state(state: EngineState) -> None:
-    if state.equity != state.wallet_balance + state.unrealized_pnl:
-        raise ValueError("equity must equal wallet plus unrealized PnL")
+def _validate_ledger_balances(state: EngineState) -> None:
     locks = (
         state.locked_initial_margin,
         state.locked_fee_reserve,
@@ -83,6 +81,12 @@ def validate_account_state(state: EngineState) -> None:
         raise AccountInvariantError("account lock cannot be negative")
     if available_balance(state) < 0:
         raise AccountInvariantError("available balance cannot be negative")
+
+
+def validate_account_state(state: EngineState) -> None:
+    _validate_ledger_balances(state)
+    if state.equity != state.wallet_balance + state.unrealized_pnl:
+        raise ValueError("equity must equal wallet plus unrealized PnL")
     if state.peak_equity < state.equity:
         raise ValueError("peak equity cannot be below current equity")
 
@@ -95,8 +99,6 @@ def reduce_ledger(previous: EngineState, entries: tuple[LedgerEntry, ...]) -> En
             raise LedgerReplayError(f"ledger entry already consumed: {item.entry_id}")
         seen.add(item.entry_id)
         wallet = state.wallet_balance + item.wallet_delta
-        unrealized = state.unrealized_pnl
-        equity = wallet + unrealized
         state = replace(
             state,
             wallet_balance=wallet,
@@ -104,11 +106,9 @@ def reduce_ledger(previous: EngineState, entries: tuple[LedgerEntry, ...]) -> En
             locked_fee_reserve=state.locked_fee_reserve + item.fee_reserve_delta,
             locked_funding_reserve=(state.locked_funding_reserve + item.funding_reserve_delta),
             pending_plan_reserve=(state.pending_plan_reserve + item.pending_plan_reserve_delta),
-            equity=equity,
-            peak_equity=max(state.peak_equity, equity),
             consumed_ledger_ids=tuple(sorted(seen)),
         )
-    validate_account_state(state)
+    _validate_ledger_balances(state)
     return state
 
 

@@ -1,6 +1,6 @@
 # 第二批 2C 验收矩阵
 
-状态：`FROZEN_FOR_TDD_IMPLEMENTATION`。本矩阵追踪 60 项 Requirement、24 个 Timeline Golden；测试名是编码阶段必须落地的稳定注册名。
+状态：`FROZEN_FOR_TDD_IMPLEMENTATION`。本矩阵追踪 60 项 Requirement、24 条 Timeline Registry 记录和 6 个完整 Canonical Golden；测试名是编码阶段必须落地的稳定注册名。
 
 缩写：`U`=unit，`P`=property，`TL`=timeline golden。实现路径均位于 `pa_agent/research_backtest/simulation/`，测试位于 `tests/research_backtest/simulation/`。
 
@@ -69,7 +69,13 @@
 | 2C-SCOPE-002 | 无 HTTP/socket/create_order/交易接口 | `test_simulation_has_no_network_surface`; P-23 | `scope_guard.py` | RT-24 |
 | 2C-SCOPE-003 | 无 2D 绩效/晋级/paper/live | `test_simulation_scope_files_symbols`; P-24 | `scope_guard.py` | RT-24 |
 
-## B. Golden Timeline Fixtures（24）
+## B. Timeline Registry（24）与完整 Canonical Goldens（6）
+
+24 条 Timeline Registry 只承担需求到真实测试的追踪，不得称为 24 个 Golden。
+`timeline_full_goldens_v1.json` 单独冻结 6 个完整场景的 input、event sequence、ledger、
+fill/trade、equity 与 PathResult Canonical SHA-256：BTC/ETH 同分钟批量、funding 与
+TIME_EXIT 同刻、stop/TP 双路径歧义、open liquidation 优先、funding reserve exceeded、
+HALT 排空。TL-05、TL-18、TL-19、TL-22 必须分别绑定其完整同刻/已有持仓退出语义测试。
 
 | Fixture | 场景 | 必须证明 |
 |---|---|---|

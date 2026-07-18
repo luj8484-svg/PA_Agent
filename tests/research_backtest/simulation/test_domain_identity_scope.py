@@ -81,12 +81,12 @@ def test_config_tamper_is_detected() -> None:
 def test_run_identity_excludes_acquisition_and_prefabricated_plans() -> None:
     from pa_agent.research_backtest.simulation.domain import make_simulation_config
     from pa_agent.research_backtest.simulation.identity import (
-        SimulationInputIdentity,
+        make_simulation_input_identity,
         simulation_run_id,
     )
 
     config = make_simulation_config(**config_payload())
-    identity = SimulationInputIdentity(
+    identity = make_simulation_input_identity(
         trade_content_hash=HASH,
         mark_content_hash="b" * 64,
         funding_content_hash="c" * 64,
@@ -99,6 +99,126 @@ def test_run_identity_excludes_acquisition_and_prefabricated_plans() -> None:
     assert simulation_run_id(identity, config) == simulation_run_id(identity, config)
     assert not hasattr(identity, "acquisition_manifest_hash")
     assert not hasattr(identity, "entry_plans")
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "trade_content_hash",
+        "mark_content_hash",
+        "funding_content_hash",
+        "candidate_content_hash",
+        "contract_content_hash",
+        "cost_content_hash",
+        "funding_risk_content_hash",
+        "maintenance_content_hash",
+    ],
+)
+def test_every_material_input_component_changes_run_identity(changed_field: str) -> None:
+    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+    from pa_agent.research_backtest.simulation.identity import (
+        make_simulation_input_identity,
+        simulation_run_id,
+    )
+
+    config = make_simulation_config(**config_payload())
+    components = {
+        "trade_content_hash": "1" * 64,
+        "mark_content_hash": "2" * 64,
+        "funding_content_hash": "3" * 64,
+        "candidate_content_hash": "4" * 64,
+        "contract_content_hash": "5" * 64,
+        "cost_content_hash": "6" * 64,
+        "funding_risk_content_hash": "7" * 64,
+        "maintenance_content_hash": "8" * 64,
+    }
+    baseline = make_simulation_input_identity(**components)
+    changed = make_simulation_input_identity(**(components | {changed_field: "9" * 64}))
+    assert simulation_run_id(baseline, config) != simulation_run_id(changed, config)
+
+
+def test_input_identity_is_built_from_actual_inputs_and_catalog() -> None:
+    from pa_agent.research_backtest.simulation.evidence import (
+        make_simulation_evidence_catalog,
+    )
+    from pa_agent.research_backtest.simulation.identity import (
+        build_simulation_input_identity,
+        verify_simulation_input_identity,
+    )
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from tests.research_backtest.execution.fixtures.entry_plan_case import complete_entry_inputs
+    from tests.research_backtest.simulation.test_minute_engine_output import minute
+
+    entry = complete_entry_inputs()
+    inputs = SimulationInputs((minute(60_000),), (entry.candidate,), ())
+    catalog = make_simulation_evidence_catalog(
+        target_opens=(entry.target_open,),
+        watermarks=(entry.watermark,),
+        contracts=(entry.contract,),
+        costs=(entry.cost,),
+        funding_schedules=(entry.funding_schedule,),
+        funding_risks=(entry.funding_risk,),
+        maintenance=(),
+        stage=entry.stage,
+        split_start_utc_ms=entry.split_start_utc_ms,
+        split_end_utc_ms=entry.split_end_utc_ms,
+        code_commit=entry.code_commit,
+        dependency_lock_hash=entry.dependency_lock_hash,
+    )
+    identity = build_simulation_input_identity(inputs, catalog)
+    verify_simulation_input_identity(identity, inputs, catalog)
+    assert identity.input_identity_id.startswith("siminput_")
+    assert len(identity.input_identity_content_hash) == 64
+
+
+def test_actual_stream_change_changes_input_and_run_identity() -> None:
+    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+    from pa_agent.research_backtest.simulation.evidence import empty_simulation_evidence_catalog
+    from pa_agent.research_backtest.simulation.identity import (
+        build_simulation_input_identity,
+        simulation_run_id,
+    )
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from tests.research_backtest.simulation.test_minute_engine_output import minute
+
+    config = make_simulation_config(**config_payload())
+    inputs = SimulationInputs((minute(60_000),), (), ())
+    changed_minute = replace(
+        minute(60_000),
+        trade_bars=(replace(minute(60_000).trade_bars[0], content_hash="f" * 64),),
+    )
+    changed = SimulationInputs((changed_minute,), (), ())
+    catalog = empty_simulation_evidence_catalog(config)
+    left = build_simulation_input_identity(inputs, catalog)
+    right = build_simulation_input_identity(changed, catalog)
+    assert left.input_identity_content_hash != right.input_identity_content_hash
+    assert simulation_run_id(left, config) != simulation_run_id(right, config)
+
+
+def test_tampered_external_identity_fails_closed() -> None:
+    from pa_agent.research_backtest.simulation.domain import make_simulation_config
+    from pa_agent.research_backtest.simulation.evidence import empty_simulation_evidence_catalog
+    from pa_agent.research_backtest.simulation.identity import (
+        build_simulation_input_identity,
+        verify_simulation_input_identity,
+    )
+    from pa_agent.research_backtest.simulation.inputs import SimulationInputs
+    from tests.research_backtest.simulation.test_minute_engine_output import minute
+
+    config = make_simulation_config(**config_payload())
+    inputs = SimulationInputs((minute(60_000),), (), ())
+    catalog = empty_simulation_evidence_catalog(config)
+    identity = build_simulation_input_identity(inputs, catalog)
+    with pytest.raises(ValueError, match="identity does not match actual simulation inputs"):
+        verify_simulation_input_identity(
+            identity,
+            SimulationInputs(
+                (replace(minute(60_000), mark_bars=()),),
+                (),
+                (),
+            ),
+            catalog,
+        )
 
 
 def test_canonical_rejects_binary_float() -> None:

@@ -6,7 +6,7 @@
 
 **Architecture:** Immutable closed-schema domain objects live under `pa_agent/research_backtest/domain`; deterministic calculations and final factories live under `pa_agent/research_backtest/planning`. Every formal object serializes through the existing Canonical JSON rules and self-verifies its content hash and prefixed ID. Upstream market, contract, cost, funding, account, and completeness evidence is passed explicitly. Planning functions return a success object or a typed rejection/path-invalid result without mutating inputs. Test registration is collected from pytest case markers and compared bidirectionally with the five frozen test-ID sources.
 
-**Tech Stack:** Python 3.11, frozen `dataclass` value objects, `Decimal`, `pytest`, `hypothesis`, Ruff, Git.
+**Tech Stack:** exact CPython 3.12.13 (`DETERMINISTIC_RESEARCH_RUNTIME_V1`), frozen `dataclass` value objects, `Decimal`, `pytest`, `hypothesis`, Ruff, Git.
 
 ## Global Constraints
 

@@ -57,6 +57,9 @@ def make_exit_intent(
     code_commit: str,
     dependency_lock_hash: str,
 ) -> ExitIntent:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     require_sha256(computational_experiment_id, "computational_experiment_id")
     require_sha256(dependency_lock_hash, "dependency_lock_hash")
     require_commit(code_commit)
@@ -132,6 +135,9 @@ def _reject(inputs: ExitPlanningInputs, *reasons: ExecutionRejectionReason) -> E
 def build_exit_execution_plan(
     inputs: ExitPlanningInputs,
 ) -> ExitExecutionPlan | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     intent = inputs.intent
     target = intent.target_execution_time_utc_ms
     reasons: list[ExecutionRejectionReason] = []

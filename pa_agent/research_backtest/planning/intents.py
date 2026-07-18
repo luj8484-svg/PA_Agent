@@ -33,6 +33,9 @@ def make_entry_intent(
     code_commit: str,
     dependency_lock_hash: str,
 ) -> EntryIntent | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     if candidate.market_view is MarketView.NO_SETUP:
         return choose_rejection(
             subject=candidate_subject_ref(candidate),

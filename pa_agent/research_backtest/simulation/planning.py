@@ -25,6 +25,7 @@ from pa_agent.research_backtest.domain.config import ExecutionTimeConfig
 from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
 from pa_agent.research_backtest.domain.costs import CostModelSnapshot
 from pa_agent.research_backtest.domain.enums import (
+    RejectionDisposition,
     ResearchStage,
     ResolutionKind,
     ScheduledExitReason,
@@ -72,10 +73,31 @@ class PlannerDependencies:
 
 
 def production_planner_dependencies(
-    entry_inputs_factory: Callable[[object, tuple[object, ...], object], object],
-    exit_inputs_factory: Callable[[object, object, object], object],
+    catalog: object,
+    candidates: tuple[object, ...],
 ) -> PlannerDependencies:
     from pa_agent.research_backtest.planning.exits import build_exit_execution_plan
+    from pa_agent.research_backtest.simulation.evidence import (
+        PlanningEvidenceFromEngine,
+        build_entry_batch_inputs_from_engine,
+        build_exit_inputs_from_engine,
+    )
+
+    def entry_inputs_factory(state, due, evidence):
+        if not isinstance(evidence, PlanningEvidenceFromEngine):
+            raise TypeError("production entry planning requires engine evidence bridge")
+        return build_entry_batch_inputs_from_engine(
+            state=state,
+            due_intents=due,
+            minute=evidence.minute,
+            candidates=candidates,
+            catalog=catalog,
+        )
+
+    def exit_inputs_factory(state, intent, evidence):
+        if not isinstance(evidence, PlanningEvidenceFromEngine):
+            raise TypeError("production exit planning requires engine evidence bridge")
+        return build_exit_inputs_from_engine(state=state, intent=intent, evidence=evidence)
 
     return PlannerDependencies(
         entry_inputs_factory,
@@ -221,6 +243,9 @@ def validate_entry_batch_post_plan(
 def build_entry_batch_planning_outcome(
     inputs: EntryBatchPlanningInputs,
 ) -> EntryBatchPlanningOutcome:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     ordered_items = tuple(
         sorted(inputs.items, key=lambda item: (item.intent.symbol, item.intent.intent_id))
     )
@@ -253,11 +278,16 @@ def build_entry_batch_planning_outcome(
         )
         if isinstance(sizing, ExecutionRejection):
             rejections.append(sizing)
+            resolution_kind = {
+                RejectionDisposition.CANDIDATE_REJECTED: ResolutionKind.ECONOMIC_REJECTION,
+                RejectionDisposition.EXECUTION_PATH_INVALID: ResolutionKind.EXECUTION_PATH_INVALID,
+                RejectionDisposition.EXPERIMENT_INVALID: ResolutionKind.EXPERIMENT_INVALID,
+            }.get(sizing.disposition, ResolutionKind.EXECUTION_PATH_INVALID)
             resolutions.append(
                 resolution_ref(
                     item.intent.intent_id,
                     item.intent.symbol,
-                    ResolutionKind.ECONOMIC_REJECTION,
+                    resolution_kind,
                     sizing.rejection_id,
                     sizing.rejection_content_hash,
                 )
@@ -300,6 +330,7 @@ def build_entry_batch_planning_outcome(
         return EntryBatchPlanningOutcome(
             (), tuple(rejections), completeness, batch, None, (), (), ()
         )
+    scaling_item_rejections: list[ExecutionRejection] = []
     scaling = scale_portfolio(
         batch,
         inputs.account,
@@ -310,7 +341,9 @@ def build_entry_batch_planning_outcome(
         },
         tuple(item.target_open for item in successful_items),
         inputs.stage,
+        rejection_audit=scaling_item_rejections,
     )
+    rejections.extend(scaling_item_rejections)
     if isinstance(scaling, ExecutionRejection):
         return EntryBatchPlanningOutcome(
             ordered_sizings,
@@ -469,6 +502,9 @@ def plan_due_entries(
     evidence: object,
     dependencies: PlannerDependencies,
 ) -> tuple[object, ...]:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     due = _due(intents, minute_open_utc_ms)
     if not due:
         return ()
@@ -487,6 +523,9 @@ def plan_due_entry_batch(
     evidence: object,
     dependencies: PlannerDependencies,
 ) -> object | None:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     due = _due(intents, minute_open_utc_ms)
     if not due:
         return None
@@ -503,6 +542,9 @@ def plan_due_exits(
     evidence: object,
     dependencies: PlannerDependencies,
 ) -> tuple[object, ...]:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     due = _due(intents, minute_open_utc_ms)
     if not due:
         return ()

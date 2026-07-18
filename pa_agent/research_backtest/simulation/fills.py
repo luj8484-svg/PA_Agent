@@ -7,8 +7,18 @@ from enum import StrEnum
 from pa_agent.research_backtest.domain.base import formal_identity
 from pa_agent.research_backtest.domain.enums import ScheduledExitReason, Side
 from pa_agent.research_backtest.simulation.domain import EngineState
-from pa_agent.research_backtest.simulation.ledger import LedgerEntry, LedgerKind, reduce_ledger
-from pa_agent.research_backtest.simulation.positions import IsolatedPosition
+from pa_agent.research_backtest.simulation.ledger import (
+    AccountInvariantError,
+    LedgerEntry,
+    LedgerKind,
+    LedgerReplayError,
+    mark_equity,
+    reduce_ledger,
+)
+from pa_agent.research_backtest.simulation.positions import (
+    IsolatedPosition,
+    position_from_entry_plan,
+)
 
 
 class FillAction(StrEnum):
@@ -52,6 +62,24 @@ class TradeRecord:
     exit_reason: ScheduledExitReason | str
     origin_plan_id: str
     origin_candidate_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EntryBatchCommit:
+    state: EngineState
+    fills: tuple[FillEvent, ...]
+    ledger_entries: tuple[LedgerEntry, ...]
+    positions: tuple[IsolatedPosition, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EntryBatchCommitFailure:
+    state: EngineState
+    reason: str
+    error_type: str
+    fills: tuple[FillEvent, ...] = ()
+    ledger_entries: tuple[LedgerEntry, ...] = ()
+    positions: tuple[IsolatedPosition, ...] = ()
 
 
 def _fill(payload: dict[str, object]) -> FillEvent:
@@ -191,8 +219,47 @@ def apply_entry_fill(
     return reduced, entries
 
 
+def apply_entry_batch(
+    state: EngineState, plans: tuple[object, ...]
+) -> EntryBatchCommit | EntryBatchCommitFailure:
+    """Rehearse an immutable entry batch and expose only all-or-none results."""
+    try:
+        ordered = stable_entry_plan_order(plans)
+        if len({plan.plan_id for plan in ordered}) != len(ordered):
+            raise ValueError("duplicate entry Plan ID")
+        if len({plan.symbol for plan in ordered}) != len(ordered):
+            raise ValueError("duplicate entry Plan symbol")
+        temporary = state
+        fills: list[FillEvent] = []
+        entries: list[LedgerEntry] = []
+        positions: list[IsolatedPosition] = []
+        for plan in ordered:
+            fill = make_entry_fill(plan)
+            position = position_from_entry_plan(plan)
+            temporary, plan_entries = apply_entry_fill(temporary, fill, position)
+            fills.append(fill)
+            entries.extend(plan_entries)
+            positions.append(position)
+        return EntryBatchCommit(
+            temporary,
+            tuple(fills),
+            tuple(entries),
+            tuple(positions),
+        )
+    except (AccountInvariantError, LedgerReplayError, ValueError) as exc:
+        return EntryBatchCommitFailure(
+            state=state,
+            reason="ENTRY_BATCH_POST_PLAN_INVARIANT_VIOLATION",
+            error_type=type(exc).__name__,
+        )
+
+
 def apply_exit_fill(
-    state: EngineState, position: IsolatedPosition, fill: FillEvent
+    state: EngineState,
+    position: IsolatedPosition,
+    fill: FillEvent,
+    *,
+    remaining_unrealized_pnl: Decimal,
 ) -> tuple[EngineState, tuple[LedgerEntry, ...], TradeRecord]:
     if fill.action is not FillAction.EXIT or fill.position_id != position.position_id:
         raise ValueError("exit Fill does not match open position")
@@ -235,10 +302,8 @@ def apply_exit_fill(
         ),
         consumed_plan_ids=tuple(sorted(set((*state.consumed_plan_ids, fill.plan_id)))),
         consumed_close_ids=tuple(sorted((*state.consumed_close_ids, position.position_id))),
-        unrealized_pnl=Decimal("0"),
-        equity=reduced.wallet_balance,
-        peak_equity=max(reduced.peak_equity, reduced.wallet_balance),
     )
+    reduced = mark_equity(reduced, remaining_unrealized_pnl)
     net = gross - position.entry_fee_paid - fill.fee + position.funding_wallet_delta_sum
     trade = TradeRecord(
         position_id=position.position_id,

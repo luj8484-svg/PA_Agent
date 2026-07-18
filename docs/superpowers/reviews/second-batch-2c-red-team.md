@@ -41,7 +41,12 @@
 
 ## 红队通过标准
 
-- 每个场景至少一个直接失败测试；RT-10、11、17、19、20、21、25、26、27、28、29、30、31、32 必须同时进入 Property 或 Timeline Golden。
+- 每个场景至少一个直接失败测试；RT-10、11、17、19、20、21、25、26、27、28、29、30、31、32 必须同时进入 Property、Timeline Registry 或六个完整 Canonical Golden 之一。Registry 只做追踪，不得冒充 Golden 输出。
+
+最终红队门槛还必须覆盖：拒绝 disposition 不得静默丢失；accepted plan 与 path-invalid
+rejection 同批时零 Fill；部分平仓不得清空其他仓位浮盈亏或用陈旧 mark 抬高 peak；第二个
+Entry Plan 失败必须回滚整个批次；外部 input identity 与实际数据不一致必须在构造路径前
+失败；production evidence bridge 不得读取未来 state 或接受预制最终 Plan。
 - RT-25 必须证明完整运行的公开接口没有“最终 Plan stream”字段，且日志/输出显示 Plan 在目标分钟由 2B 返回。
 - RT-17 必须使用真实2B生产函数证明BTC LONG与ETH SHORT共享唯一账户快照、Batch和ScalingResult；输入逆序不改变结果，量化拒绝不触发重分配，批后现金/风险/证据冲突不得静默删除交易。
 - RT-26 对连续 20 个歧义分钟断言每一分钟 active path count 恰为2，并以Property证明无歧义经济输出一致、首次歧义前缀一致且只从该分钟起允许分化。

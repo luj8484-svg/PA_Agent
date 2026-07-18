@@ -82,6 +82,10 @@ class MinuteInputSlice:
 class PathInvalidEvent:
     event_time_utc_ms: int
     reason: str
+    rejection_id: str | None = None
+    rejection_reason: str | None = None
+    rejection_disposition: str | None = None
+    rejection_stage: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

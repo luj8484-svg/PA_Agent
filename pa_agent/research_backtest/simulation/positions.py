@@ -27,6 +27,7 @@ class IsolatedPosition:
     maximum_exit_time_utc_ms: int
     entry_fee_paid: Decimal = Decimal("0")
     funding_wallet_delta_sum: Decimal = Decimal("0")
+    planned_risk: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         if not self.position_id or not self.origin_plan_id or not self.origin_candidate_id:
@@ -46,6 +47,7 @@ class IsolatedPosition:
             "remaining_funding_reserve",
             "planned_funding_slice",
             "entry_fee_paid",
+            "planned_risk",
         )
         for name in positive + nonnegative:
             value = getattr(self, name)
@@ -84,4 +86,5 @@ def position_from_entry_plan(plan: object) -> IsolatedPosition:
         origin_candidate_id=plan.candidate_id,
         maximum_exit_time_utc_ms=plan.maximum_exit_time_utc_ms,
         entry_fee_paid=plan.entry_fee,
+        planned_risk=plan.planned_risk,
     )
