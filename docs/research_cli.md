@@ -1,5 +1,15 @@
 # Deterministic Research CLI
 
+## Deterministic runtime lock
+
+The 2A/2B/2C deterministic research chain is supported only on
+`DETERMINISTIC_RESEARCH_RUNTIME_V1 = CPython 3.12.13`. The general legacy package may
+still declare Python 3.11 or newer, but `pa-research` Candidate, Plan, and Simulation
+execution fails closed on every other implementation or patch version. Help and version
+display remain available. `pa-research validate-environment` reports the implementation,
+exact version, and `status=PASS` only for CPython 3.12.13. Validation is local-only and
+does not inspect API keys or access the network.
+
 The deterministic BTC/ETH research path is deliberately isolated from the legacy PA Agent desktop application.
 
 ## Safe research commands

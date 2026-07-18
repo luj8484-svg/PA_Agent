@@ -7,6 +7,8 @@ from pa_agent.research_backtest.domain.accounts import (
     account_evidence_records,
     experiment_state_evidence,
     make_account_planning_snapshot,
+    open_risk_evidence,
+    position_evidence,
     wallet_ledger_evidence,
 )
 from pa_agent.research_backtest.domain.batches import (
@@ -50,21 +52,50 @@ TARGET_TIME = 14_460_000
 MAXIMUM_EXIT_TIME = TARGET_TIME + 172_800_000
 
 
-def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
+def complete_entry_inputs(
+    *,
+    state: ExperimentState = ExperimentState.RUNNING,
+    symbol: str = "BTCUSDT",
+    market_view: MarketView = MarketView.LONG,
+    min_qty: Decimal = Decimal("0.001"),
+    existing_open_risk: Decimal = Decimal("0"),
+    decision_close_override: Decimal | None = None,
+    atr14_4h: Decimal = Decimal("10"),
+):
+    market_reason = (
+        MarketReason.BULL_DONCHIAN_BREAKOUT
+        if market_view is MarketView.LONG
+        else MarketReason.BEAR_DONCHIAN_BREAKOUT
+    )
+    trend_state = TrendState.BULL if market_view is MarketView.LONG else TrendState.BEAR
+    decision_close = decision_close_override or (
+        Decimal("121") if market_view is MarketView.LONG else Decimal("79")
+    )
+    daily_close = Decimal("110") if market_view is MarketView.LONG else Decimal("90")
+    ema50 = Decimal("105") if market_view is MarketView.LONG else Decimal("95")
+    ema200 = Decimal("100")
     candidate = strategy_candidate(
-        symbol="BTCUSDT",
+        symbol=symbol,
         decision_time_utc_ms=DECISION_TIME,
         decision_bar_open_time_utc_ms=0,
-        market_view=MarketView.LONG,
-        market_reason=MarketReason.BULL_DONCHIAN_BREAKOUT,
-        decision_close=Decimal("121"),
-        daily_close=Decimal("110"),
-        trend_state=TrendState.BULL,
-        ema50_daily=Decimal("105"),
-        ema200_daily=Decimal("100"),
-        atr14_4h=Decimal("10"),
-        donchian_high_previous_20=Decimal("120"),
-        donchian_low_previous_20=Decimal("80"),
+        market_view=market_view,
+        market_reason=market_reason,
+        decision_close=decision_close,
+        daily_close=daily_close,
+        trend_state=trend_state,
+        ema50_daily=ema50,
+        ema200_daily=ema200,
+        atr14_4h=atr14_4h,
+        donchian_high_previous_20=(
+            decision_close - Decimal("1")
+            if market_view is MarketView.LONG
+            else decision_close + Decimal("40")
+        ),
+        donchian_low_previous_20=(
+            decision_close - Decimal("40")
+            if market_view is MarketView.LONG
+            else decision_close + Decimal("1")
+        ),
         decision_visible_input_hash=SHA,
         indicator_config_hash="d" * 64,
         strategy_config_hash="e" * 64,
@@ -81,15 +112,15 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         dependency_lock_hash=LOCK,
     )
     target_open = target_minute_open_snapshot(
-        symbol="BTCUSDT",
+        symbol=symbol,
         open_time_utc_ms=TARGET_TIME,
-        open_price=Decimal("121"),
+        open_price=decision_close,
         source_stream_version="BINANCE_TRADE_OPEN_EVENT_V1",
         code_commit=COMMIT,
         dependency_lock_hash=LOCK,
     )
     watermark = target_event_watermark(
-        symbol="BTCUSDT",
+        symbol=symbol,
         target_open_time_utc_ms=TARGET_TIME,
         event_watermark_time_utc_ms=TARGET_TIME,
         watermark_source_event_id="watermark-event-1",
@@ -98,24 +129,24 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         dependency_lock_hash=LOCK,
     )
     contract = verified_contract_rule(
-        symbol="BTCUSDT",
+        symbol=symbol,
         query_time_utc_ms=TARGET_TIME,
         source_kind="BINANCE_ARCHIVE",
-        source_uri_or_archive_id="rules/btc/v1",
+        source_uri_or_archive_id=f"rules/{symbol.lower()}/v1",
         source_content_hash=SHA,
         effective_from_utc_ms=0,
         effective_to_utc_ms=MAXIMUM_EXIT_TIME + 1,
-        rule_version="BTCUSDT_RULE_V1",
+        rule_version=f"{symbol}_RULE_V1",
         tick_size=Decimal("0.1"),
         step_size=Decimal("0.001"),
-        min_qty=Decimal("0.001"),
+        min_qty=min_qty,
         min_notional=Decimal("5"),
         quantity_precision_audit=3,
         price_precision_audit=1,
         evidence_manifest_hash="1" * 64,
     )
     cost = cost_model_snapshot(
-        symbol="BTCUSDT",
+        symbol=symbol,
         fee_rate=Decimal("0.0005"),
         slippage_rate=Decimal("0.0001"),
         stress_multiplier=Decimal("1"),
@@ -125,7 +156,7 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         for time in range(28_800_000, 172_800_001, 28_800_000)
     )
     schedule = funding_schedule_snapshot(
-        symbol="BTCUSDT",
+        symbol=symbol,
         schedule_version="BINANCE_EXPLICIT_WINDOWS_V1",
         effective_from_utc_ms=0,
         effective_to_utc_ms=MAXIMUM_EXIT_TIME + 1,
@@ -136,7 +167,7 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
         dependency_lock_hash=LOCK,
     )
     funding_risk = covered_funding_risk_config(
-        symbol="BTCUSDT",
+        symbol=symbol,
         target_time_utc_ms=TARGET_TIME,
         adverse_rate_cap=Decimal("0.0001"),
         effective_from_utc_ms=0,
@@ -158,8 +189,12 @@ def complete_entry_inputs(*, state: ExperimentState = ExperimentState.RUNNING):
             locked_funding_reserve=Decimal("0"),
         ),
         valuations=(),
-        positions=(),
-        open_risks=(),
+        positions=((position_evidence(symbol="BTCUSDT"),) if existing_open_risk else ()),
+        open_risks=(
+            (open_risk_evidence(symbol="BTCUSDT", risk=existing_open_risk),)
+            if existing_open_risk
+            else ()
+        ),
         pending_plans=(),
         experiment_state=experiment_state_evidence(event_time_utc_ms=TARGET_TIME, state=state),
     )

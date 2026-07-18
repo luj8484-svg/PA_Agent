@@ -91,6 +91,9 @@ def _reject(inputs: SizingInputs, *reasons: str | ExecutionRejectionReason) -> E
 
 
 def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     if not isinstance(inputs.stage, ResearchStage):
         raise ValueError("invalid sizing research stage")
     reasons: list[ExecutionRejectionReason] = []

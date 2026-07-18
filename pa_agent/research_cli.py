@@ -24,9 +24,14 @@ def _print_version() -> int:
 
 
 def _validate_environment() -> int:
+    from pa_agent.research_backtest.runtime import runtime_status
+
     importlib.import_module("pa_agent.research_data")
     importlib.import_module("pa_agent.research_backtest")
-    print(f"python={platform.python_version()}")
+    observed = runtime_status()
+    print(f"implementation={observed.implementation}")
+    print(f"version={observed.version}")
+    print(f"status={observed.status}")
     for distribution in DEPENDENCY_DISTRIBUTIONS:
         print(f"dependency.{distribution}={_distribution_version(distribution)}")
     print("research_data=OK")
@@ -34,7 +39,7 @@ def _validate_environment() -> int:
     print("llm_api_key_required=no")
     print("exchange_api_key_required=no")
     print("network_access=not_performed")
-    return 0
+    return 0 if observed.status == "PASS" else 2
 
 
 def _parser() -> argparse.ArgumentParser:

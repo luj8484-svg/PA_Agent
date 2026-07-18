@@ -48,6 +48,9 @@ def resolve_batch_completeness(
     code_commit: str,
     dependency_lock_hash: str,
 ) -> PortfolioBatchCompletenessSnapshot | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     expected_ids = tuple(sorted(item.entry_intent_id for item in expected_intents))
     resolution_ids = tuple(sorted(item.entry_intent_id for item in resolutions))
     missing_only = len(resolution_ids) == len(set(resolution_ids)) and set(resolution_ids) < set(
@@ -96,7 +99,12 @@ def scale_portfolio(
     contracts: dict[str, ContractRuleCoverage],
     target_open_snapshots: tuple[TargetMinuteOpenSnapshot, ...],
     stage: ResearchStage,
+    *,
+    rejection_audit: list[ExecutionRejection] | None = None,
 ) -> PortfolioScalingResult | ExecutionRejection:
+    from pa_agent.research_backtest.runtime import assert_deterministic_research_runtime
+
+    assert_deterministic_research_runtime()
     if not isinstance(stage, ResearchStage):
         raise ValueError("invalid research stage")
     ordered = tuple(sorted(sizing_results, key=lambda item: (item.symbol, item.result_id)))
@@ -197,6 +205,8 @@ def scale_portfolio(
             code_commit=batch.code_commit,
             dependency_lock_hash=batch.dependency_lock_hash,
         )
+        if rejection_audit is not None:
+            rejection_audit.append(rejection)
         items.append(
             rejected_scaling_item(
                 {

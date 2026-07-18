@@ -34,6 +34,15 @@ def test_validate_environment_does_not_open_network(monkeypatch, capsys) -> None
     assert "network_access=not_performed" in capsys.readouterr().out
 
 
+def test_validate_environment_rejects_non_frozen_runtime(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("platform.python_version", lambda: "3.12.9")
+    assert research_cli.main(["validate-environment"]) != 0
+    output = capsys.readouterr().out
+    assert "implementation=CPython" in output
+    assert "version=3.12.9" in output
+    assert "status=FAIL" in output
+
+
 def test_packaging_exposes_separate_research_and_legacy_gui_entries() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'pa-research = "pa_agent.research_cli:main"' in pyproject
