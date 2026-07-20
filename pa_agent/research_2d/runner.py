@@ -33,6 +33,7 @@ from pa_agent.research_2d.metrics import oos_confidence_intervals, summarize_pat
 from pa_agent.research_2d.streaming import STREAMING_ADAPTER_VERSION, run_streaming_paths
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
 from pa_agent.research_backtest.domain.config import execution_time_config
+from pa_agent.research_backtest.indicators.numeric import float64_to_decimal_15sig
 from pa_agent.research_backtest.simulation.context import make_production_run_context
 from pa_agent.research_backtest.simulation.domain import make_simulation_config
 from pa_agent.research_backtest.simulation.inputs import SimulationInputs
@@ -93,6 +94,17 @@ def _atomic_text(path: Path, content: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def canonical_report_value(value: object) -> object:
+    """Quantize binary indicator/statistic floats at the frozen report boundary."""
+    if isinstance(value, float):
+        return float64_to_decimal_15sig(value)
+    if isinstance(value, dict):
+        return {key: canonical_report_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return tuple(canonical_report_value(item) for item in value)
+    return value
 
 
 def _load_candidates(
@@ -492,7 +504,7 @@ def run_baseline_evaluation(
         "cost_stress.json": cost_stress,
     }
     for name, value in files.items():
-        _atomic_text(temporary / name, canonical_dumps(value) + "\n")
+        _atomic_text(temporary / name, canonical_dumps(canonical_report_value(value)) + "\n")
     with (temporary / "trades.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(("split", "authority", "scenario", "path", "trade_json"))
