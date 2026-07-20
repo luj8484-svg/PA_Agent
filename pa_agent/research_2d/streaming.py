@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from itertools import pairwise
 
 from pa_agent.research_backtest.domain.rejections import ExecutionRejection
 from pa_agent.research_backtest.simulation.context import (
@@ -54,6 +55,7 @@ class _Accumulator:
     event_counts: Counter[str]
     gap_context: list[dict[str, object]]
     processed: int = 0
+    candidate_cursor: int = 0
 
 
 def _retain(acc: _Accumulator, result: MinuteResult) -> None:
@@ -84,6 +86,11 @@ def run_streaming_paths(
 ) -> tuple[StreamPathRun, ...]:
     """Run frozen 2C minute economics while retaining only metric-relevant projections."""
     validate_production_run_context(context)
+    if any(
+        right.decision_time_utc_ms < left.decision_time_utc_ms
+        for left, right in pairwise(context.candidates)
+    ):
+        raise ValueError("streaming Candidate input must be decision-time ordered")
     dependencies = build_production_engine_dependencies(context)
     config = context.config
     accumulators = {
@@ -147,12 +154,14 @@ def run_streaming_paths(
                     and intent.target_execution_time_utc_ms == minute.minute_open_utc_ms
                     for intent in state.pending_exit_intents
                 )
-            visible = tuple(
-                candidate
-                for candidate in context.candidates
-                if candidate.decision_time_utc_ms < minute.minute_open_utc_ms
-                and candidate.candidate_id not in state.seen_candidate_ids
-            )
+            cursor = acc.candidate_cursor
+            while (
+                cursor < len(context.candidates)
+                and context.candidates[cursor].decision_time_utc_ms < minute.minute_open_utc_ms
+            ):
+                cursor += 1
+            visible = context.candidates[acc.candidate_cursor : cursor]
+            acc.candidate_cursor = cursor
             created: tuple[object, ...] = ()
             if visible:
                 created = tuple(dependencies.entry_intent_factory(item) for item in visible)
