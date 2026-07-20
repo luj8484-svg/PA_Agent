@@ -107,6 +107,118 @@ def canonical_report_value(value: object) -> object:
     return value
 
 
+def _enum_value(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def _fill_economic_signature(fill: object) -> tuple[object, ...]:
+    return (
+        fill.symbol,
+        _enum_value(fill.side),
+        _enum_value(fill.action),
+        fill.event_time_utc_ms,
+        fill.quantity,
+        fill.fill_price,
+        fill.fee,
+        _enum_value(fill.selected_exit_reason),
+        tuple(_enum_value(item) for item in fill.matched_exit_reasons),
+    )
+
+
+def _trade_economic_signature(trade: object) -> tuple[object, ...]:
+    return (
+        trade.symbol,
+        _enum_value(trade.side),
+        trade.entry_time_utc_ms,
+        trade.exit_time_utc_ms,
+        trade.entry_price,
+        trade.exit_price,
+        trade.quantity,
+        trade.entry_fee,
+        trade.exit_fee,
+        trade.funding,
+        trade.gross_pnl,
+        trade.net_pnl,
+        _enum_value(trade.exit_reason),
+    )
+
+
+def _protective_counts(fills: tuple[object, ...]) -> dict[str, int]:
+    counts = {"STOP_LOSS": 0, "TAKE_PROFIT": 0, "LIQUIDATION": 0}
+    for fill in fills:
+        suffix = str(fill.plan_id).rsplit(":", 1)[-1]
+        if suffix in counts:
+            counts[suffix] += 1
+    return counts
+
+
+def _reconcile_authorities(
+    native_runs: tuple[object, ...],
+    aggregated_runs: tuple[object, ...],
+    native_metrics: tuple[dict[str, object], ...] | list[dict[str, object]],
+    aggregated_metrics: tuple[dict[str, object], ...] | list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    native_by_path = {run.path_kind.value: run for run in native_runs}
+    aggregated_by_path = {run.path_kind.value: run for run in aggregated_runs}
+    native_metric = {item["path_kind"]: item for item in native_metrics}
+    aggregated_metric = {item["path_kind"]: item for item in aggregated_metrics}
+    output = {}
+    for path in sorted(native_by_path):
+        native = native_by_path[path]
+        aggregated = aggregated_by_path[path]
+        native_fill_signature = tuple(_fill_economic_signature(item) for item in native.fills)
+        aggregated_fill_signature = tuple(
+            _fill_economic_signature(item) for item in aggregated.fills
+        )
+        native_trade_signature = tuple(_trade_economic_signature(item) for item in native.trades)
+        aggregated_trade_signature = tuple(
+            _trade_economic_signature(item) for item in aggregated.trades
+        )
+        metrics_match = all(
+            native_metric[path][name] == aggregated_metric[path][name]
+            for name in ("net_return", "maximum_drawdown")
+        )
+        economic_match = (
+            native_fill_signature == aggregated_fill_signature
+            and native_trade_signature == aggregated_trade_signature
+            and metrics_match
+        )
+        output[path] = {
+            "economic_outputs_match": economic_match,
+            "native_trade_count": len(native.trades),
+            "aggregated_trade_count": len(aggregated.trades),
+            "trade_count_difference": len(aggregated.trades) - len(native.trades),
+            "native_fill_count": len(native.fills),
+            "aggregated_fill_count": len(aggregated.fills),
+            "fill_count_difference": len(aggregated.fills) - len(native.fills),
+            "native_protective_exit_counts": _protective_counts(native.fills),
+            "aggregated_protective_exit_counts": _protective_counts(aggregated.fills),
+            "native_net_return": native_metric[path]["net_return"],
+            "aggregated_net_return": aggregated_metric[path]["net_return"],
+            "net_return_difference": Decimal(str(aggregated_metric[path]["net_return"]))
+            - Decimal(str(native_metric[path]["net_return"])),
+            "native_maximum_drawdown": native_metric[path]["maximum_drawdown"],
+            "aggregated_maximum_drawdown": aggregated_metric[path]["maximum_drawdown"],
+            "maximum_drawdown_difference": Decimal(str(aggregated_metric[path]["maximum_drawdown"]))
+            - Decimal(str(native_metric[path]["maximum_drawdown"])),
+            "affected_native_trade_ids": (
+                () if economic_match else tuple(item.origin_candidate_id for item in native.trades)
+            ),
+            "affected_aggregated_trade_ids": (
+                ()
+                if economic_match
+                else tuple(item.origin_candidate_id for item in aggregated.trades)
+            ),
+            "affected_native_fill_ids": (
+                () if economic_match else tuple(item.fill_id for item in native.fills)
+            ),
+            "affected_aggregated_fill_ids": (
+                () if economic_match else tuple(item.fill_id for item in aggregated.fills)
+            ),
+        }
+    return output
+
+
 def _load_candidates(
     root: Path,
     split: Split,
@@ -157,6 +269,7 @@ def _market_evidence(
     root: Path,
     split: Split,
     candidates: tuple[object, ...],
+    trends: tuple[object, ...],
 ) -> tuple[
     tuple[tuple[str, int, Decimal], ...],
     tuple[tuple[str, int], ...],
@@ -166,17 +279,7 @@ def _market_evidence(
     entry_targets = tuple(
         sorted((item.symbol, item.decision_time_utc_ms + 1 + 60_000) for item in candidates)
     )
-    required = set(entry_targets)
-    for symbol, entry_time in entry_targets:
-        time_exit = entry_time + 48 * 60 * 60 * 1000 + 60_000
-        if time_exit <= split.end_exit_open_utc_ms:
-            required.add((symbol, time_exit))
-    first_boundary = (split.start_utc_ms // 14_400_000 + 1) * 14_400_000
-    for time in range(first_boundary, split.end_exit_open_utc_ms + 1, 14_400_000):
-        for symbol in SUPPORTED_SYMBOLS:
-            required.add((symbol, time))
-    for symbol in SUPPORTED_SYMBOLS:
-        required.add((symbol, split.end_exit_open_utc_ms))
+    required = set(_required_evidence_targets(candidates, trends, split))
     prices = []
     for symbol in SUPPORTED_SYMBOLS:
         wanted = {time for item_symbol, time in required if item_symbol == symbol}
@@ -219,6 +322,26 @@ def _market_evidence(
                 cursor += 1
             caps.append((symbol, target, maximum))
     return tuple(prices), tuple(sorted(required)), tuple(funding_times), tuple(caps)
+
+
+def _required_evidence_targets(
+    candidates: tuple[object, ...], trends: tuple[object, ...], split: Split
+) -> tuple[tuple[str, int], ...]:
+    entry_targets = tuple(
+        sorted((item.symbol, item.decision_time_utc_ms + 1 + 60_000) for item in candidates)
+    )
+    required = set(entry_targets)
+    for symbol, entry_time in entry_targets:
+        time_exit = entry_time + 48 * 60 * 60 * 1000 + 120_000
+        if time_exit <= split.end_exit_open_utc_ms:
+            required.add((symbol, time_exit))
+    for item in trends:
+        target = item.decision_time_utc_ms + 1 + 60_000
+        if split.start_utc_ms <= target <= split.end_exit_open_utc_ms:
+            required.add((item.symbol, target))
+    for symbol in SUPPORTED_SYMBOLS:
+        required.add((symbol, split.end_exit_open_utc_ms))
+    return tuple(sorted(required))
 
 
 def _gap_intervals(root: Path, split: Split) -> tuple[tuple[str, int, int], ...]:
@@ -406,7 +529,7 @@ def run_baseline_evaluation(
                 code_commit,
                 approval.manifest["dependency_lock_hash"],
             )
-            evidence_data = _market_evidence(root, split, candidates)
+            evidence_data = _market_evidence(root, split, candidates, trends)
             runs, metrics = _run_scenario(
                 root=root,
                 split=split,
@@ -442,7 +565,7 @@ def run_baseline_evaluation(
         code_commit,
         approval.manifest["dependency_lock_hash"],
     )
-    native_evidence = _market_evidence(root, oos, native_candidates)
+    native_evidence = _market_evidence(root, oos, native_candidates, native_trends)
     stresses = (
         Scenario("COMBINED_2X", Decimal("2"), Decimal("2")),
         Scenario("FEE_SLIPPAGE_3X", Decimal("1"), Decimal("1"), Decimal("3"), Decimal("3")),
@@ -474,6 +597,15 @@ def run_baseline_evaluation(
     native_metrics = {key: value for key, value in all_metrics.items() if ":NATIVE_PRIMARY:" in key}
     aggregated_metrics = {
         key: value for key, value in all_metrics.items() if ":AGGREGATED_AUDIT_SENSITIVITY:" in key
+    }
+    aggregated_metrics["authority_reconciliation"] = {
+        split.name: _reconcile_authorities(
+            all_runs[(split.name, "NATIVE_PRIMARY", "BASE_1X")],
+            all_runs[(split.name, "AGGREGATED_AUDIT_SENSITIVITY", "BASE_1X")],
+            all_metrics[f"{split.name}:NATIVE_PRIMARY:BASE_1X"],
+            all_metrics[f"{split.name}:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X"],
+        )
+        for split in splits
     }
     gap_impact = {
         ":".join(key): {run.path_kind.value: run.gap_context for run in runs}
