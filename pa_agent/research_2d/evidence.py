@@ -86,7 +86,21 @@ def build_evidence_catalog(request: EvidenceRequest) -> SimulationEvidenceCatalo
         for symbol, time in all_target_keys
     )
     contracts = []
-    for symbol, time in all_target_keys:
+    contract_intervals = []
+    for symbol in sorted(SYMBOL_RULES):
+        times = sorted(time for item_symbol, time in all_target_keys if item_symbol == symbol)
+        for index, time in enumerate(times):
+            contract_intervals.append(
+                (
+                    symbol,
+                    time,
+                    request.split_start_utc_ms if index == 0 else time,
+                    times[index + 1]
+                    if index + 1 < len(times)
+                    else request.split_end_exit_open_utc_ms + 60_000,
+                )
+            )
+    for symbol, time, effective_from, effective_to in contract_intervals:
         tick, step, min_qty, min_notional, price_precision, quantity_precision = SYMBOL_RULES[
             symbol
         ]
@@ -97,8 +111,8 @@ def build_evidence_catalog(request: EvidenceRequest) -> SimulationEvidenceCatalo
                 source_kind="BINANCE_CURRENT_EXCHANGE_INFO",
                 source_uri_or_archive_id="/fapi/v1/exchangeInfo:2026-07-19",
                 source_content_hash=CURRENT_RULE_SOURCE_HASH,
-                effective_from_utc_ms=request.split_start_utc_ms,
-                effective_to_utc_ms=request.split_end_exit_open_utc_ms + 60_000,
+                effective_from_utc_ms=effective_from,
+                effective_to_utc_ms=effective_to,
                 rule_version=CONTRACT_RULE_VERSION,
                 tick_size=tick,
                 step_size=step,
@@ -148,7 +162,7 @@ def build_evidence_catalog(request: EvidenceRequest) -> SimulationEvidenceCatalo
         covered_funding_risk_config(
             symbol=symbol,
             target_time_utc_ms=time,
-            adverse_rate_cap=caps[(symbol, time)] * request.funding_stress_multiplier,
+            adverse_rate_cap=caps[(symbol, time)],
             effective_from_utc_ms=request.split_start_utc_ms,
             effective_to_utc_ms=request.split_end_exit_open_utc_ms + 60_000,
             source_kind="BINANCE_ARCHIVE_PRIOR_OBSERVED_MAX",
