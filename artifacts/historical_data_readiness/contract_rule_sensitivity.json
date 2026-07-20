@@ -1,0 +1,1 @@
+{"historical_exchange_info_fabricated":false,"plans_analyzed":0,"reason":"This data-only task creates no ExecutionPlan or position quantity.","required_2d_labels":["CONTRACT_RULE_SENSITIVITY","NOT_EXCHANGE_EXACT"],"status":"EXECUTION_LEVEL_ANALYSIS_DEFERRED_UNTIL_2D","version":"APPROXIMATED_CURRENT_RULES_V1"}
