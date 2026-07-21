@@ -35,7 +35,7 @@ Each task emits parent-observable progress heartbeats. The watchdog has separate
 
 ## Canonical identity and diagnostics
 
-Canonical economic artifacts contain no runtime diagnostics. Fields such as generation time, duration, PID, worker count, multiprocessing context, RSS, heartbeat times, and temporary paths are written only to a separate non-authoritative diagnostic record and are excluded from canonical artifact hashes. Repeated full runs with the same approved data, code, dependencies, and configuration must produce byte-identical authoritative economic artifacts regardless of worker count.
+Canonical economic artifacts contain no runtime diagnostics. Fields such as generation time, duration, PID, worker count, multiprocessing context, RSS, heartbeat times, and temporary paths are written only beneath a separate diagnostics root, never inside the canonical experiment directory, and are excluded from canonical artifact hashes. Repeated full runs with the same approved data, code, dependencies, and configuration must produce byte-identical authoritative economic artifacts regardless of worker count.
 
 ## Verification
 
