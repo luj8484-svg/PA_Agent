@@ -41,6 +41,7 @@ from pa_agent.research_backtest.domain.sizing import (
     SizingRejected,
     position_sizing_result,
 )
+from pa_agent.research_backtest.planning.cash import calculate_final_required_cash
 from pa_agent.research_backtest.planning.funding import effective_adverse_rate_cap
 from pa_agent.research_backtest.planning.prices import adverse_gap, floor_to_step, price_geometry
 from pa_agent.research_backtest.planning.rejections import choose_rejection
@@ -226,11 +227,14 @@ def position_sizing(inputs: SizingInputs) -> PositionSizingResult | ExecutionRej
     if planned_risk > budget:
         raise ValueError("floor-quantized quantity exceeded risk budget")
     unscaled_planned_risk = raw_quantity * unit_risk
-    raw_notional = raw_quantity * entry
-    raw_entry_fee = raw_quantity * entry * fee_rate
-    raw_exit_fee = raw_quantity * exit_basis * fee_rate
-    raw_funding = raw_quantity * exit_basis * funding_rate * inputs.funding_event_upper_bound
-    unscaled_required_cash = raw_notional + raw_entry_fee + raw_exit_fee + raw_funding
+    unscaled_required_cash = calculate_final_required_cash(
+        quantity=raw_quantity,
+        expected_entry_fill_price=entry,
+        planned_exit_notional_price_basis=exit_basis,
+        effective_fee_rate=fee_rate,
+        effective_adverse_rate_cap=funding_rate,
+        funding_event_upper_bound=inputs.funding_event_upper_bound,
+    )
     payload = {
         "schema_version": POSITION_SIZING_RESULT_SCHEMA_VERSION,
         "intent_id": inputs.intent_id,

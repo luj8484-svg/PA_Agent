@@ -11,6 +11,7 @@ from pa_agent.research_backtest.domain.batches import (
     portfolio_batch_completeness_snapshot,
 )
 from pa_agent.research_backtest.domain.contracts import ContractRuleCoverage
+from pa_agent.research_backtest.domain.costs import CostModelSnapshot
 from pa_agent.research_backtest.domain.enums import ExecutionRejectionReason, ResearchStage
 from pa_agent.research_backtest.domain.market_inputs import TargetMinuteOpenSnapshot
 from pa_agent.research_backtest.domain.rejections import (
@@ -27,6 +28,7 @@ from pa_agent.research_backtest.domain.scaling import (
     rejected_scaling_item,
 )
 from pa_agent.research_backtest.domain.sizing import PositionSizingResult
+from pa_agent.research_backtest.planning.cash import calculate_final_required_cash
 from pa_agent.research_backtest.planning.prices import floor_to_step
 from pa_agent.research_backtest.planning.rejections import choose_rejection
 from pa_agent.research_backtest.versions import (
@@ -97,6 +99,7 @@ def scale_portfolio(
     account: AccountPlanningSnapshot,
     sizing_results: tuple[PositionSizingResult, ...],
     contracts: dict[str, ContractRuleCoverage],
+    costs: dict[str, CostModelSnapshot],
     target_open_snapshots: tuple[TargetMinuteOpenSnapshot, ...],
     stage: ResearchStage,
     *,
@@ -174,6 +177,9 @@ def scale_portfolio(
         contract = contracts.get(sizing.result_id)
         if contract is None or contract.coverage_id != sizing.contract_rule_coverage_id:
             raise ValueError("contract evidence does not match sizing result")
+        cost = costs.get(sizing.result_id)
+        if cost is None or cost.snapshot_id != sizing.cost_model_snapshot_id:
+            raise ValueError("cost evidence does not match sizing result")
         quantity = floor_to_step(sizing.raw_quantity * final_scale, contract.step_size)
         if quantity == 0:
             reason = ExecutionRejectionReason.QUANTITY_ROUNDED_TO_ZERO
@@ -182,7 +188,6 @@ def scale_portfolio(
         elif quantity * sizing.expected_entry_fill_price < contract.min_notional:
             reason = ExecutionRejectionReason.BELOW_MIN_NOTIONAL
         else:
-            per_unit_cash = sizing.unscaled_required_cash / sizing.raw_quantity
             payload = {
                 "schema_version": ACCEPTED_SCALING_ITEM_SCHEMA_VERSION,
                 "symbol": sizing.symbol,
@@ -190,7 +195,14 @@ def scale_portfolio(
                 "final_quantity": quantity,
                 "final_notional": quantity * sizing.expected_entry_fill_price,
                 "final_planned_risk": quantity * sizing.unit_risk,
-                "final_required_cash": quantity * per_unit_cash,
+                "final_required_cash": calculate_final_required_cash(
+                    quantity=quantity,
+                    expected_entry_fill_price=sizing.expected_entry_fill_price,
+                    planned_exit_notional_price_basis=sizing.planned_exit_notional_price_basis,
+                    effective_fee_rate=cost.effective_fee_rate,
+                    effective_adverse_rate_cap=sizing.effective_adverse_rate_cap,
+                    funding_event_upper_bound=sizing.funding_event_upper_bound,
+                ),
                 "step_size": contract.step_size,
                 "minimum_status": "PASSED_MIN_QTY_AND_NOTIONAL",
             }

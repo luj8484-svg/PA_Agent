@@ -1,5 +1,12 @@
 # 2B 需求追踪与验收矩阵
 
+## Canonical required cash regression additions
+
+| Requirement ID | Requirement | Invariant | Source | Valid input | Invalid input | Output | Failure | Boundary | Unit Test | Property Test | Golden Fixture | Implementation | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2B-CASH-024 | One Canonical final required cash path | Scaling and Plan values are byte-identical | final quantity and frozen cost inputs | exact Decimal inputs | ratio-derived residue | Plan | DATA_INVALID | real candidate c28491 | UT-CASH-001 | PT-CANONICAL-CASH | GF-REAL-CASH-RESIDUE | `planning/cash.py` | IMPLEMENTED |
+| 2B-CASH-025 | Ambient Decimal context cannot alter cash | precision 9 and 50 produce the same value | frozen Decimal context | supported precision | ambient arithmetic | identical Decimal | DATA_INVALID | context mutation | UT-CASH-002 | PT-CANONICAL-CONTEXT | GF-REAL-CASH-RESIDUE | `planning/cash.py` | IMPLEMENTED |
+
 状态：preflight闭环后获准按TDD实施；所有实现路径仍须遵守冻结范围。
 Requirement 总数：`114`。每个 Requirement 至少对应一个唯一 Unit Test ID；Property 和 Golden 列给出独立覆盖或明确共享覆盖。测试命名冻结，编码时不得出现没有 Requirement ID 的测试。
 
