@@ -4,7 +4,10 @@ import csv
 import json
 import os
 import shutil
+import time
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -31,6 +34,12 @@ from pa_agent.research_2d.identity import (
     computational_experiment_id,
 )
 from pa_agent.research_2d.metrics import oos_confidence_intervals, summarize_path
+from pa_agent.research_2d.parallel import (
+    EvaluationTask,
+    exclusive_output_lock,
+    formal_task_keys,
+    run_tasks,
+)
 from pa_agent.research_2d.streaming import STREAMING_ADAPTER_VERSION, run_streaming_paths
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
 from pa_agent.research_backtest.domain.config import execution_time_config
@@ -95,6 +104,20 @@ def _atomic_text(path: Path, content: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+@contextmanager
+def experiment_temporary_directory(output_root: Path, experiment_id: str):
+    temporary = output_root / f".{experiment_id}.tmp"
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True)
+    try:
+        yield temporary
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
 
 
 def canonical_report_value(value: object) -> object:
@@ -471,7 +494,43 @@ def run_baseline_evaluation(
     root: Path,
     output_root: Path,
     code_commit: str,
+    max_workers: int = 1,
+    task_timeout_seconds: float = 28_800,
+    no_progress_timeout_seconds: float = 600,
+    diagnostics_root: Path | None = None,
 ) -> Path:
+    with exclusive_output_lock(output_root):
+        existing_temporaries = {
+            path.resolve() for path in output_root.glob(".*.tmp") if path.is_dir()
+        }
+        try:
+            return _run_baseline_evaluation_locked(
+                root=root,
+                output_root=output_root,
+                code_commit=code_commit,
+                max_workers=max_workers,
+                task_timeout_seconds=task_timeout_seconds,
+                no_progress_timeout_seconds=no_progress_timeout_seconds,
+                diagnostics_root=diagnostics_root,
+            )
+        except BaseException:
+            for path in output_root.glob(".*.tmp"):
+                if path.is_dir() and path.resolve() not in existing_temporaries:
+                    shutil.rmtree(path)
+            raise
+
+
+def _run_baseline_evaluation_locked(
+    *,
+    root: Path,
+    output_root: Path,
+    code_commit: str,
+    max_workers: int,
+    task_timeout_seconds: float,
+    no_progress_timeout_seconds: float,
+    diagnostics_root: Path | None,
+) -> Path:
+    started_monotonic = time.perf_counter()
     approval = verify_data_approval_manifest(root / "data_approval_manifest_v1.json")
     split_manifest_path = root / "experiment_split_candidate_v3.json"
     split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
@@ -520,6 +579,8 @@ def run_baseline_evaluation(
     all_runs: dict[tuple[str, str, str], tuple[object, ...]] = {}
     candidates_meta = {}
     benchmarks = {}
+    tasks = []
+    prepared: dict[tuple[str, str], tuple[object, ...]] = {}
     training_start = splits[0].start_utc_ms
     base = Scenario("BASE_1X", Decimal("1"), Decimal("1"))
     for split in splits:
@@ -533,22 +594,24 @@ def run_baseline_evaluation(
                 approval.manifest["dependency_lock_hash"],
             )
             evidence_data = _market_evidence(root, split, candidates, trends)
-            runs, metrics = _run_scenario(
-                root=root,
-                split=split,
-                authority=authority,
-                scenario=base,
-                candidates=candidates,
-                trends=trends,
-                evidence_data=evidence_data,
-                experiment_id=experiment_id,
-                approval_hash=approval.manifest_hash,
-                code_commit=code_commit,
-                dependency_lock_hash=approval.manifest["dependency_lock_hash"],
-            )
             key = f"{split.name}:{authority}:BASE_1X"
-            all_metrics[key] = metrics
-            all_runs[(split.name, authority, "BASE_1X")] = runs
+            tasks.append(
+                EvaluationTask(
+                    key=key,
+                    root=root,
+                    split=split,
+                    authority=authority,
+                    scenario=base,
+                    candidates=candidates,
+                    trends=trends,
+                    evidence_data=evidence_data,
+                    experiment_id=experiment_id,
+                    approval_hash=approval.manifest_hash,
+                    code_commit=code_commit,
+                    dependency_lock_hash=approval.manifest["dependency_lock_hash"],
+                )
+            )
+            prepared[(split.name, authority)] = (candidates, trends, evidence_data)
             candidates_meta[f"{split.name}:{authority}"] = {
                 "actionable_count": len(candidates),
                 "market_view_counts": counts,
@@ -560,37 +623,45 @@ def run_baseline_evaluation(
                 split_end_utc_ms=split.end_utc_ms,
             )
     oos = splits[-1]
-    native_candidates, native_trends, _, _ = _load_candidates(
-        root,
-        oos,
-        "NATIVE_PRIMARY",
-        training_start,
-        code_commit,
-        approval.manifest["dependency_lock_hash"],
-    )
-    native_evidence = _market_evidence(root, oos, native_candidates, native_trends)
+    native_candidates, native_trends, native_evidence = prepared[("OOS", "NATIVE_PRIMARY")]
     stresses = (
         Scenario("COMBINED_2X", Decimal("2"), Decimal("2")),
         Scenario("FEE_SLIPPAGE_3X", Decimal("1"), Decimal("1"), Decimal("3"), Decimal("3")),
         Scenario("FUNDING_2X", Decimal("1"), Decimal("2")),
     )
-    cost_stress = {}
     for scenario in stresses:
-        runs, metrics = _run_scenario(
-            root=root,
-            split=oos,
-            authority="NATIVE_PRIMARY",
-            scenario=scenario,
-            candidates=native_candidates,
-            trends=native_trends,
-            evidence_data=native_evidence,
-            experiment_id=experiment_id,
-            approval_hash=approval.manifest_hash,
-            code_commit=code_commit,
-            dependency_lock_hash=approval.manifest["dependency_lock_hash"],
+        tasks.append(
+            EvaluationTask(
+                key=f"OOS:NATIVE_PRIMARY:{scenario.name}",
+                root=root,
+                split=oos,
+                authority="NATIVE_PRIMARY",
+                scenario=scenario,
+                candidates=native_candidates,
+                trends=native_trends,
+                evidence_data=native_evidence,
+                experiment_id=experiment_id,
+                approval_hash=approval.manifest_hash,
+                code_commit=code_commit,
+                dependency_lock_hash=approval.manifest["dependency_lock_hash"],
+            )
         )
-        all_runs[("OOS", "NATIVE_PRIMARY", scenario.name)] = runs
-        cost_stress[scenario.name] = metrics
+    if tuple(task.key for task in tasks) != formal_task_keys():
+        raise AssertionError("formal task registry differs from frozen order")
+    batch = run_tasks(
+        tuple(tasks),
+        max_workers=max_workers,
+        task_timeout_seconds=task_timeout_seconds,
+        no_progress_timeout_seconds=no_progress_timeout_seconds,
+    )
+    cost_stress = {}
+    for result in batch.results:
+        split_name, authority, scenario_name = result.key.split(":")
+        all_runs[(split_name, authority, scenario_name)] = result.runs
+        if scenario_name == "BASE_1X":
+            all_metrics[result.key] = result.metrics
+        else:
+            cost_stress[scenario_name] = result.metrics
     oos_runs = all_runs[("OOS", "NATIVE_PRIMARY", "BASE_1X")]
     oos_metrics = all_metrics["OOS:NATIVE_PRIMARY:BASE_1X"]
     confidence = {
@@ -677,4 +748,34 @@ def run_baseline_evaluation(
     }
     _atomic_text(temporary / "result_manifest.json", canonical_dumps(result_manifest) + "\n")
     os.replace(temporary, final)
+    diagnostics_base = diagnostics_root or output_root.parent / "research_2d_diagnostics"
+    diagnostics_directory = diagnostics_base / experiment_id
+    diagnostics_directory.mkdir(parents=True, exist_ok=True)
+    run_id = f"{time.time_ns()}-{os.getpid()}-{uuid.uuid4().hex}"
+    diagnostics = {
+        "schema_version": "RESEARCH_2D_RUNTIME_DIAGNOSTICS_V1",
+        "computational_experiment_id": experiment_id,
+        "run_id": run_id,
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "duration_seconds": time.perf_counter() - started_monotonic,
+        "parent_pid": os.getpid(),
+        "worker_count": max_workers,
+        "multiprocessing_start_method": batch.multiprocessing_start_method,
+        "parent_peak_rss_bytes": batch.parent_peak_rss_bytes,
+        "aggregate_worker_peak_rss_bytes": batch.aggregate_worker_peak_rss_bytes,
+        "tasks": {
+            result.key: {
+                "worker_pid": result.worker_pid,
+                "worker_peak_rss_bytes": result.worker_peak_rss_bytes,
+                "payload_pickle_bytes": result.payload_pickle_bytes,
+                "result_pickle_bytes": result.result_pickle_bytes,
+            }
+            for result in batch.results
+        },
+        "heartbeat_count": len(batch.heartbeats),
+    }
+    _atomic_text(
+        diagnostics_directory / f"{run_id}.json",
+        json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
     return final

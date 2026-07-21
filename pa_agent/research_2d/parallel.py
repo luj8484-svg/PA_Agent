@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import ctypes
+import multiprocessing
 import os
 import pickle
 import sys
+import time
+import traceback
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    as_completed,
+)
+from concurrent.futures import (
+    TimeoutError as FuturesTimeoutError,
+)
+from contextlib import contextmanager
 from ctypes import POINTER, Structure, byref, c_size_t, sizeof
 from ctypes.wintypes import BOOL, DWORD, HANDLE
 from dataclasses import dataclass, replace
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 NUMERICAL_THREAD_ENV = (
@@ -43,6 +55,26 @@ class EvaluationTaskResult:
     result_pickle_bytes: int
     worker_pid: int
     worker_peak_rss_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class TaskExecutionBatch:
+    results: tuple[object, ...]
+    multiprocessing_start_method: str
+    parent_peak_rss_bytes: int
+    aggregate_worker_peak_rss_bytes: int
+    heartbeats: tuple[tuple[object, ...], ...]
+
+
+class ParallelEvaluationError(RuntimeError):
+    def __init__(self, task_key: str, traceback_text: str) -> None:
+        super().__init__(f"parallel evaluation failed for {task_key}")
+        self.task_key = task_key
+        self.traceback_text = traceback_text
+
+
+class OutputRootLockedError(RuntimeError):
+    pass
 
 
 def formal_task_keys() -> tuple[str, ...]:
@@ -123,6 +155,193 @@ def peak_rss_bytes() -> int:
 
     peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return peak if sys.platform == "darwin" else peak * 1024
+
+
+@contextmanager
+def exclusive_output_lock(output_root: Path):
+    output_root.mkdir(parents=True, exist_ok=True)
+    lock_path = output_root / ".research_2d.lock"
+    handle = lock_path.open("a+b")
+    acquired = False
+    try:
+        try:
+            handle.seek(0)
+            if handle.read(1) == b"":
+                handle.seek(0)
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError as exc:
+            raise OutputRootLockedError(f"output root is locked: {output_root}") from exc
+        yield lock_path
+    finally:
+        if acquired:
+            try:
+                handle.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
+
+
+def _terminate_executor(executor: ProcessPoolExecutor, futures: tuple[object, ...]) -> None:
+    for future in futures:
+        future.cancel()
+    processes = tuple(getattr(executor, "_processes", {}).values())
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join(timeout=5)
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _drain_heartbeats(
+    progress_queue: Any,
+    heartbeats: list[tuple[object, ...]],
+    started_at: dict[str, float],
+    last_progress: dict[str, float],
+    worker_rss: dict[int, int],
+) -> int:
+    aggregate_peak = sum(worker_rss.values())
+    while True:
+        try:
+            message = tuple(progress_queue.get_nowait())
+        except Empty:
+            break
+        heartbeats.append(message)
+        key, kind, _processed, _minute, pid, rss = message
+        now = time.monotonic()
+        if kind == "STARTED":
+            started_at[str(key)] = now
+        last_progress[str(key)] = now
+        worker_rss[int(pid)] = int(rss)
+        aggregate_peak = max(aggregate_peak, sum(worker_rss.values()))
+    return aggregate_peak
+
+
+def run_tasks(
+    tasks: tuple[object, ...],
+    *,
+    max_workers: int,
+    task_timeout_seconds: float,
+    no_progress_timeout_seconds: float,
+    worker=None,
+) -> TaskExecutionBatch:
+    if max_workers not in {1, 2, 6}:
+        raise ValueError("max_workers must be one of 1, 2, or 6")
+    if task_timeout_seconds <= 0 or no_progress_timeout_seconds <= 0:
+        raise ValueError("watchdog timeouts must be positive")
+    if worker is None:
+        worker = execute_evaluation_task
+    keys = tuple(str(task.key) for task in tasks)
+    if len(keys) != len(set(keys)):
+        raise ValueError("task keys must be unique")
+    for task in tasks:
+        pickle.loads(pickle.dumps(task, protocol=pickle.HIGHEST_PROTOCOL))
+    pickle.dumps(worker, protocol=pickle.HIGHEST_PROTOCOL)
+    context = multiprocessing.get_context("spawn")
+    manager = context.Manager()
+    progress_queue = manager.Queue()
+    executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=context)
+    futures: dict[object, str] = {}
+    results: dict[str, object] = {}
+    heartbeats: list[tuple[object, ...]] = []
+    started_at: dict[str, float] = {}
+    last_progress: dict[str, float] = {}
+    worker_rss: dict[int, int] = {}
+    aggregate_peak = 0
+    try:
+        futures = {executor.submit(worker, task, progress_queue): str(task.key) for task in tasks}
+        pending = set(futures)
+        while pending:
+            aggregate_peak = max(
+                aggregate_peak,
+                _drain_heartbeats(
+                    progress_queue,
+                    heartbeats,
+                    started_at,
+                    last_progress,
+                    worker_rss,
+                ),
+            )
+            completed = []
+            try:
+                for future in as_completed(tuple(pending), timeout=0.05):
+                    completed.append(future)
+            except FuturesTimeoutError:
+                pass
+            for future in completed:
+                pending.remove(future)
+                key = futures[future]
+                try:
+                    result = future.result()
+                except BaseException as exc:
+                    raise ParallelEvaluationError(key, traceback.format_exc()) from exc
+                if str(result.key) != key:
+                    raise ParallelEvaluationError(
+                        key, f"worker returned mismatched task key {result.key!r}"
+                    )
+                results[key] = result
+            now = time.monotonic()
+            for future in pending:
+                key = futures[future]
+                started = started_at.get(key)
+                if started is None:
+                    continue
+                if now - started > task_timeout_seconds:
+                    raise ParallelEvaluationError(
+                        key,
+                        f"task runtime timeout after {task_timeout_seconds} seconds\n"
+                        + "".join(traceback.format_stack()),
+                    )
+                if now - last_progress.get(key, started) > no_progress_timeout_seconds:
+                    raise ParallelEvaluationError(
+                        key,
+                        f"no progress timeout after {no_progress_timeout_seconds} seconds\n"
+                        + "".join(traceback.format_stack()),
+                    )
+        aggregate_peak = max(
+            aggregate_peak,
+            _drain_heartbeats(
+                progress_queue,
+                heartbeats,
+                started_at,
+                last_progress,
+                worker_rss,
+            ),
+        )
+        executor.shutdown(wait=True, cancel_futures=False)
+    except BaseException as exc:
+        _terminate_executor(executor, tuple(futures))
+        if isinstance(exc, ParallelEvaluationError):
+            raise
+        raise ParallelEvaluationError("PARENT", traceback.format_exc()) from exc
+    finally:
+        manager.shutdown()
+    return TaskExecutionBatch(
+        results=tuple(results[key] for key in keys),
+        multiprocessing_start_method=context.get_start_method(),
+        parent_peak_rss_bytes=peak_rss_bytes(),
+        aggregate_worker_peak_rss_bytes=aggregate_peak,
+        heartbeats=tuple(heartbeats),
+    )
 
 
 def _put_progress(progress_queue: Any, message: tuple[object, ...]) -> None:

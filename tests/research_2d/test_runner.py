@@ -1,4 +1,7 @@
+import subprocess
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 from pa_agent.research_2d.runner import (
@@ -6,6 +9,7 @@ from pa_agent.research_2d.runner import (
     _reconcile_authorities,
     _required_evidence_targets,
     canonical_report_value,
+    experiment_temporary_directory,
 )
 from pa_agent.research_backtest.domain.canonical import canonical_dumps
 
@@ -77,3 +81,27 @@ def test_authority_reconciliation_ignores_identity_only_differences() -> None:
     assert result["BASELINE"]["economic_outputs_match"] is True
     assert result["BASELINE"]["affected_native_trade_ids"] == ()
     assert result["BASELINE"]["affected_aggregated_trade_ids"] == ()
+
+
+def test_experiment_temporary_directory_cleans_on_failure(tmp_path: Path) -> None:
+    experiment_id = "a" * 64
+    try:
+        with experiment_temporary_directory(tmp_path, experiment_id) as temporary:
+            (temporary / "partial.json").write_text("partial", encoding="utf-8")
+            raise RuntimeError("worker failed")
+    except RuntimeError:
+        pass
+    assert not (tmp_path / f".{experiment_id}.tmp").exists()
+    assert not (tmp_path / experiment_id).exists()
+
+
+def test_cli_exposes_parallel_safety_controls() -> None:
+    completed = subprocess.run(
+        [sys.executable, "scripts/run_2d_baseline_evaluation.py", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--max-workers {1,2,6}" in completed.stdout
+    assert "--task-timeout-seconds" in completed.stdout
+    assert "--no-progress-timeout-seconds" in completed.stdout
