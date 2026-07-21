@@ -116,6 +116,19 @@ if sys.platform == "win32":
             ("PeakPagefileUsage", c_size_t),
         )
 
+    class _MemoryStatusEx(Structure):
+        _fields_ = (
+            ("dwLength", DWORD),
+            ("dwMemoryLoad", DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        )
+
     _get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
     _get_process_memory_info.argtypes = (
         HANDLE,
@@ -155,6 +168,26 @@ def peak_rss_bytes() -> int:
 
     peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return peak if sys.platform == "darwin" else peak * 1024
+
+
+def physical_memory_status() -> tuple[int, int]:
+    if sys.platform == "win32":
+        status = _MemoryStatusEx()
+        status.dwLength = sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(byref(status)):
+            raise OSError("GlobalMemoryStatusEx failed")
+        return int(status.ullTotalPhys), int(status.ullAvailPhys)
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        values = {}
+        for line in meminfo.read_text(encoding="ascii").splitlines():
+            name, value = line.split(":", 1)
+            values[name] = int(value.strip().split()[0]) * 1024
+        return values["MemTotal"], values["MemAvailable"]
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    total = os.sysconf("SC_PHYS_PAGES") * page_size
+    available = os.sysconf("SC_AVPHYS_PAGES") * page_size
+    return int(total), int(available)
 
 
 @contextmanager

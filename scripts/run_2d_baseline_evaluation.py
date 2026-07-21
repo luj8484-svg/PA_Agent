@@ -5,10 +5,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pa_agent.research_2d.runner import run_baseline_evaluation
+from pa_agent.research_2d.parallel import limit_numerical_threads
+
+limit_numerical_threads()
 
 
 def main() -> int:
+    from pa_agent.research_2d.runner import run_baseline_evaluation
+
     parser = argparse.ArgumentParser(
         description="Run approved deterministic 2D baseline evaluation"
     )

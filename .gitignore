@@ -47,6 +47,8 @@ research_data_output/
 /artifacts/historical_data_readiness/data/
 /artifacts/data_readiness/refreshed/
 /artifacts/research_2d/
+/artifacts/research_2d_capacity/
+/artifacts/research_2d_diagnostics/
 
 # ── 本地临时 / 解包产物（WorkBuddy、网关调试等）──────────────────────────────
 _tmp_wb_asar/

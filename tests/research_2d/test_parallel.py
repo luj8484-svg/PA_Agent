@@ -16,6 +16,7 @@ from pa_agent.research_2d.parallel import (
     formal_task_keys,
     limit_numerical_threads,
     peak_rss_bytes,
+    physical_memory_status,
     pickle_size,
     run_tasks,
 )
@@ -97,6 +98,8 @@ def test_rss_measurements_are_positive_and_ordered() -> None:
     peak = peak_rss_bytes()
     assert current > 0
     assert peak >= current
+    total, available = physical_memory_status()
+    assert total >= available > 0
 
 
 def test_worker_numerical_threads_are_limited(monkeypatch) -> None:
@@ -118,6 +121,20 @@ def test_completion_order_does_not_change_registry_order() -> None:
     )
     assert tuple(item.key for item in batch.results) == ("slow", "fast")
     assert batch.multiprocessing_start_method == "spawn"
+
+
+def test_supported_worker_counts_execute_spawn_fixture() -> None:
+    tasks = tuple(_ProbeTask(f"task-{index}", 0.01) for index in range(6))
+    expected = tuple(item.key for item in tasks)
+    for workers in (1, 2, 6):
+        batch = run_tasks(
+            tasks,
+            max_workers=workers,
+            task_timeout_seconds=10,
+            no_progress_timeout_seconds=5,
+            worker=_probe_worker,
+        )
+        assert tuple(item.key for item in batch.results) == expected
 
 
 def test_worker_exception_reports_key_and_traceback() -> None:
