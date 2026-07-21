@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
@@ -83,6 +83,8 @@ def run_streaming_paths(
     minutes: Iterable[MinuteInputSlice],
     *,
     gap_intervals: tuple[tuple[str, int, int], ...] = (),
+    progress_callback: Callable[[int, int], None] | None = None,
+    progress_interval_minutes: int = 10_000,
 ) -> tuple[StreamPathRun, ...]:
     """Run frozen 2C minute economics while retaining only metric-relevant projections."""
     validate_production_run_context(context)
@@ -123,12 +125,22 @@ def run_streaming_paths(
     }
     expected_time = config.simulation_start_utc_ms
     last_minute: int | None = None
+    processed_inputs = 0
+    last_reported = 0
+    if progress_interval_minutes <= 0:
+        raise ValueError("progress interval must be positive")
     for minute in minutes:
         if minute.minute_open_utc_ms != expected_time:
             raise ValueError("streaming inputs must cover contiguous UTC minutes")
         if minute.minute_open_utc_ms > config.simulation_end_exit_open_utc_ms:
             raise ValueError("minute slice lies outside SimulationConfig interval")
         last_minute = minute.minute_open_utc_ms
+        processed_inputs += 1
+        if progress_callback is not None and (
+            processed_inputs == 1 or processed_inputs % progress_interval_minutes == 0
+        ):
+            progress_callback(processed_inputs, minute.minute_open_utc_ms)
+            last_reported = processed_inputs
         expected_time += 60_000
         for acc in accumulators.values():
             state = acc.state
@@ -214,6 +226,8 @@ def run_streaming_paths(
                     item["invalid_episode_count"] += 1
     if last_minute != config.simulation_end_exit_open_utc_ms:
         raise ValueError("streaming inputs do not reach experiment exit open")
+    if progress_callback is not None and processed_inputs != last_reported:
+        progress_callback(processed_inputs, last_minute)
     output = []
     for kind, acc in accumulators.items():
         state = acc.state

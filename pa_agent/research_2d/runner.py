@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -366,6 +367,7 @@ def _run_scenario(
     approval_hash: str,
     code_commit: str,
     dependency_lock_hash: str,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[tuple[object, ...], list[dict[str, object]]]:
     prices, required, funding_times, caps = evidence_data
     execution = execution_time_config(entry_delay_minutes=1, exit_delay_minutes=1)
@@ -426,6 +428,7 @@ def _run_scenario(
             trend_evidence=trends,
         ),
         gap_intervals=_gap_intervals(root, split),
+        progress_callback=progress_callback,
     )
     metrics = [
         summarize_path(

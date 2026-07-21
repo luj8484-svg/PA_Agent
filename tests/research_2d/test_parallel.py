@@ -8,7 +8,10 @@ from types import SimpleNamespace
 from pa_agent.research_2d.parallel import (
     EvaluationTask,
     EvaluationTaskResult,
+    current_rss_bytes,
     formal_task_keys,
+    limit_numerical_threads,
+    peak_rss_bytes,
     pickle_size,
 )
 
@@ -61,3 +64,18 @@ def test_task_and_result_are_pickleable() -> None:
     assert pickle.loads(pickle.dumps(task)) == task
     assert pickle.loads(pickle.dumps(result)) == result
     assert pickle_size(task) == len(pickle.dumps(task, protocol=pickle.HIGHEST_PROTOCOL))
+
+
+def test_rss_measurements_are_positive_and_ordered() -> None:
+    current = current_rss_bytes()
+    peak = peak_rss_bytes()
+    assert current > 0
+    assert peak >= current
+
+
+def test_worker_numerical_threads_are_limited(monkeypatch) -> None:
+    names = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+    for name in names:
+        monkeypatch.setenv(name, "16")
+    limit_numerical_threads()
+    assert {name: __import__("os").environ[name] for name in names} == {name: "1" for name in names}

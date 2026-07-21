@@ -124,7 +124,14 @@ def test_streaming_adapter_matches_frozen_2c_terminal_economics() -> None:
         computational_experiment_id="f" * 64,
     )
     frozen = run_production_simulation(inputs, context)
-    streamed = run_streaming_paths(context, minutes)
+    progress = []
+    streamed = run_streaming_paths(
+        context,
+        minutes,
+        progress_callback=lambda count, time: progress.append((count, time)),
+        progress_interval_minutes=2,
+    )
+    assert progress == [(1, start), (2, TARGET_TIME), (3, end)]
     for expected, actual in zip(frozen.paths, streamed, strict=True):
         assert actual.state == expected.minute_results[-1].state
         assert actual.fills == tuple(
