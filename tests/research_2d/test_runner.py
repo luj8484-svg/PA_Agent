@@ -103,5 +103,5 @@ def test_cli_exposes_parallel_safety_controls() -> None:
         text=True,
     )
     assert "--max-workers {1,2,6}" in completed.stdout
-    assert "--task-timeout-seconds" in completed.stdout
+    assert "--hard-timeout-seconds" in completed.stdout
     assert "--no-progress-timeout-seconds" in completed.stdout

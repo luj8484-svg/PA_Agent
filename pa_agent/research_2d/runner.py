@@ -175,8 +175,8 @@ def run_prioritized_task_phases(
     tasks: tuple[object, ...],
     *,
     max_workers: int,
-    task_timeout_seconds: float,
-    no_progress_timeout_seconds: float,
+    hard_timeout_seconds: float,
+    no_progress_timeout_seconds: float | None,
     batch_runner=run_tasks,
 ) -> TaskExecutionBatch:
     by_phase = (
@@ -192,7 +192,7 @@ def run_prioritized_task_phases(
         batch = batch_runner(
             phase,
             max_workers=max_workers,
-            task_timeout_seconds=task_timeout_seconds,
+            hard_timeout_seconds=hard_timeout_seconds,
             no_progress_timeout_seconds=no_progress_timeout_seconds,
             result_validator=assess_formal_task_result,
         )
@@ -760,8 +760,8 @@ def run_baseline_evaluation(
     output_root: Path,
     code_commit: str,
     max_workers: int = 1,
-    task_timeout_seconds: float = 28_800,
-    no_progress_timeout_seconds: float = 600,
+    hard_timeout_seconds: float = 21_600,
+    no_progress_timeout_seconds: float | None = None,
     diagnostics_root: Path | None = None,
     known_diagnostic_gap_report: Path | None = None,
 ) -> Path:
@@ -775,7 +775,7 @@ def run_baseline_evaluation(
                 output_root=output_root,
                 code_commit=code_commit,
                 max_workers=max_workers,
-                task_timeout_seconds=task_timeout_seconds,
+                hard_timeout_seconds=hard_timeout_seconds,
                 no_progress_timeout_seconds=no_progress_timeout_seconds,
                 diagnostics_root=diagnostics_root,
                 known_diagnostic_gap_report=known_diagnostic_gap_report,
@@ -793,8 +793,8 @@ def _run_baseline_evaluation_locked(
     output_root: Path,
     code_commit: str,
     max_workers: int,
-    task_timeout_seconds: float,
-    no_progress_timeout_seconds: float,
+    hard_timeout_seconds: float,
+    no_progress_timeout_seconds: float | None,
     diagnostics_root: Path | None,
     known_diagnostic_gap_report: Path | None,
 ) -> Path:
@@ -932,7 +932,7 @@ def _run_baseline_evaluation_locked(
     batch = run_prioritized_task_phases(
         tuple(tasks),
         max_workers=max_workers,
-        task_timeout_seconds=task_timeout_seconds,
+        hard_timeout_seconds=hard_timeout_seconds,
         no_progress_timeout_seconds=no_progress_timeout_seconds,
     )
     cost_stress = {}

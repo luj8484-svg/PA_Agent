@@ -66,6 +66,12 @@ class TaskExecutionBatch:
     heartbeats: tuple[tuple[object, ...], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class WatchdogConfig:
+    hard_timeout_seconds: float
+    no_progress_timeout_seconds: float | None
+
+
 class ParallelEvaluationError(RuntimeError):
     def __init__(self, task_key: str, traceback_text: str) -> None:
         super().__init__(f"parallel evaluation failed for {task_key}")
@@ -273,15 +279,23 @@ def run_tasks(
     tasks: tuple[object, ...],
     *,
     max_workers: int,
-    task_timeout_seconds: float,
-    no_progress_timeout_seconds: float,
+    hard_timeout_seconds: float | None = None,
+    no_progress_timeout_seconds: float | None = None,
     worker=None,
     result_validator=None,
+    task_timeout_seconds: float | None = None,
 ) -> TaskExecutionBatch:
     if max_workers not in {1, 2, 6}:
         raise ValueError("max_workers must be one of 1, 2, or 6")
-    if task_timeout_seconds <= 0 or no_progress_timeout_seconds <= 0:
-        raise ValueError("watchdog timeouts must be positive")
+    if hard_timeout_seconds is not None and task_timeout_seconds is not None:
+        raise ValueError("hard timeout must not use both canonical and legacy names")
+    effective_hard_timeout = (
+        hard_timeout_seconds if hard_timeout_seconds is not None else task_timeout_seconds
+    )
+    if effective_hard_timeout is None or effective_hard_timeout <= 0:
+        raise ValueError("hard timeout must be positive")
+    if no_progress_timeout_seconds is not None and no_progress_timeout_seconds <= 0:
+        raise ValueError("enabled no-progress timeout must be positive")
     if worker is None:
         worker = execute_evaluation_task
     keys = tuple(str(task.key) for task in tasks)
@@ -290,6 +304,11 @@ def run_tasks(
     for task in tasks:
         pickle.loads(pickle.dumps(task, protocol=pickle.HIGHEST_PROTOCOL))
     pickle.dumps(worker, protocol=pickle.HIGHEST_PROTOCOL)
+    watchdog_config = WatchdogConfig(
+        hard_timeout_seconds=effective_hard_timeout,
+        no_progress_timeout_seconds=no_progress_timeout_seconds,
+    )
+    watchdog_config = pickle.loads(pickle.dumps(watchdog_config, protocol=pickle.HIGHEST_PROTOCOL))
     context = multiprocessing.get_context("spawn")
     manager = context.Manager()
     progress_queue = manager.Queue()
@@ -302,7 +321,10 @@ def run_tasks(
     worker_rss: dict[int, int] = {}
     aggregate_peak = 0
     try:
-        futures = {executor.submit(worker, task, progress_queue): str(task.key) for task in tasks}
+        futures = {
+            executor.submit(worker, task, progress_queue, watchdog_config): str(task.key)
+            for task in tasks
+        }
         pending = set(futures)
         while pending:
             aggregate_peak = max(
@@ -344,16 +366,19 @@ def run_tasks(
                 started = started_at.get(key)
                 if started is None:
                     continue
-                if now - started > task_timeout_seconds:
+                if now - started > effective_hard_timeout:
                     raise ParallelEvaluationError(
                         key,
-                        f"task runtime timeout after {task_timeout_seconds} seconds\n"
+                        f"HARD_TIMEOUT after {effective_hard_timeout} seconds\n"
                         + "".join(traceback.format_stack()),
                     )
-                if now - last_progress.get(key, started) > no_progress_timeout_seconds:
+                if (
+                    no_progress_timeout_seconds is not None
+                    and now - last_progress.get(key, started) > no_progress_timeout_seconds
+                ):
                     raise ParallelEvaluationError(
                         key,
-                        f"no progress timeout after {no_progress_timeout_seconds} seconds\n"
+                        f"NO_PROGRESS_TIMEOUT after {no_progress_timeout_seconds} seconds\n"
                         + "".join(traceback.format_stack()),
                     )
         aggregate_peak = max(
@@ -389,9 +414,19 @@ def _put_progress(progress_queue: Any, message: tuple[object, ...]) -> None:
 
 
 def execute_evaluation_task(
-    task: EvaluationTask, progress_queue: Any = None
+    task: EvaluationTask,
+    progress_queue: Any = None,
+    watchdog_config: WatchdogConfig | None = None,
 ) -> EvaluationTaskResult:
     limit_numerical_threads()
+    if watchdog_config is None:
+        raise ValueError("worker watchdog config is required")
+    print(
+        f"worker_start task_key={task.key} "
+        f"hard_timeout_seconds={watchdog_config.hard_timeout_seconds} "
+        f"no_progress_timeout_seconds={watchdog_config.no_progress_timeout_seconds}",
+        flush=True,
+    )
     _put_progress(progress_queue, (task.key, "STARTED", 0, None, os.getpid(), 0))
     from pa_agent.research_2d.runner import _run_scenario
 

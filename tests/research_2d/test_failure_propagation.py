@@ -64,7 +64,7 @@ def test_training_mark_gap_is_diagnostic_and_oos_phase_runs_first() -> None:
     batch = run_prioritized_task_phases(
         tasks,
         max_workers=2,
-        task_timeout_seconds=10,
+        hard_timeout_seconds=10,
         no_progress_timeout_seconds=5,
         batch_runner=batch_runner,
     )

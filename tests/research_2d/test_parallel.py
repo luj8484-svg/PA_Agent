@@ -32,15 +32,21 @@ class _ProbeTask:
 @dataclass(frozen=True)
 class _ProbeResult:
     key: str
+    no_progress_timeout_seconds: float | None = None
+    hard_timeout_seconds: float | None = None
 
 
-def _probe_worker(task: _ProbeTask, progress_queue) -> _ProbeResult:
+def _probe_worker(task: _ProbeTask, progress_queue, watchdog_config) -> _ProbeResult:
     progress_queue.put((task.key, "STARTED", 0, None, 1, 1))
     if task.mode == "exception":
         raise RuntimeError(f"probe failure {task.key}")
     time.sleep(task.delay_seconds)
     progress_queue.put((task.key, "COMPLETED", 1, 60_000, 1, 1))
-    return _ProbeResult(task.key)
+    return _ProbeResult(
+        task.key,
+        watchdog_config.no_progress_timeout_seconds,
+        watchdog_config.hard_timeout_seconds,
+    )
 
 
 def _task() -> EvaluationTask:
@@ -115,7 +121,7 @@ def test_completion_order_does_not_change_registry_order() -> None:
     batch = run_tasks(
         tasks,
         max_workers=2,
-        task_timeout_seconds=10,
+        hard_timeout_seconds=10,
         no_progress_timeout_seconds=5,
         worker=_probe_worker,
     )
@@ -130,7 +136,7 @@ def test_supported_worker_counts_execute_spawn_fixture() -> None:
         batch = run_tasks(
             tasks,
             max_workers=workers,
-            task_timeout_seconds=10,
+            hard_timeout_seconds=10,
             no_progress_timeout_seconds=5,
             worker=_probe_worker,
         )
@@ -142,7 +148,7 @@ def test_worker_exception_reports_key_and_traceback() -> None:
         run_tasks(
             (_ProbeTask("broken", mode="exception"),),
             max_workers=1,
-            task_timeout_seconds=10,
+            hard_timeout_seconds=10,
             no_progress_timeout_seconds=5,
             worker=_probe_worker,
         )
@@ -155,12 +161,12 @@ def test_task_runtime_timeout_reports_key() -> None:
         run_tasks(
             (_ProbeTask("slow", 1),),
             max_workers=1,
-            task_timeout_seconds=0.1,
+            hard_timeout_seconds=0.1,
             no_progress_timeout_seconds=5,
             worker=_probe_worker,
         )
     assert caught.value.task_key == "slow"
-    assert "task runtime timeout" in caught.value.traceback_text
+    assert "HARD_TIMEOUT" in caught.value.traceback_text
 
 
 def test_no_progress_timeout_reports_key() -> None:
@@ -168,12 +174,12 @@ def test_no_progress_timeout_reports_key() -> None:
         run_tasks(
             (_ProbeTask("stalled", 1),),
             max_workers=1,
-            task_timeout_seconds=5,
+            hard_timeout_seconds=5,
             no_progress_timeout_seconds=0.1,
             worker=_probe_worker,
         )
     assert caught.value.task_key == "stalled"
-    assert "no progress timeout" in caught.value.traceback_text
+    assert "NO_PROGRESS_TIMEOUT" in caught.value.traceback_text
 
 
 def test_keyboard_interrupt_is_fail_closed(monkeypatch) -> None:
@@ -187,12 +193,38 @@ def test_keyboard_interrupt_is_fail_closed(monkeypatch) -> None:
         run_tasks(
             (_ProbeTask("interrupted", 1),),
             max_workers=1,
-            task_timeout_seconds=5,
+            hard_timeout_seconds=5,
             no_progress_timeout_seconds=1,
             worker=_probe_worker,
         )
     assert caught.value.task_key == "PARENT"
     assert "KeyboardInterrupt" in caught.value.traceback_text
+
+
+def test_no_progress_none_reaches_worker_and_disables_silence_timeout() -> None:
+    batch = run_tasks(
+        (_ProbeTask("silent-but-alive", 0.2),),
+        max_workers=1,
+        hard_timeout_seconds=2,
+        no_progress_timeout_seconds=None,
+        worker=_probe_worker,
+    )
+    result = batch.results[0]
+    assert result.no_progress_timeout_seconds is None
+    assert result.hard_timeout_seconds == 2
+
+
+def test_hard_timeout_returns_only_hard_timeout_reason() -> None:
+    with __import__("pytest").raises(ParallelEvaluationError) as caught:
+        run_tasks(
+            (_ProbeTask("hard-timeout", 1),),
+            max_workers=1,
+            hard_timeout_seconds=0.1,
+            no_progress_timeout_seconds=None,
+            worker=_probe_worker,
+        )
+    assert "HARD_TIMEOUT" in caught.value.traceback_text
+    assert "NO_PROGRESS_TIMEOUT" not in caught.value.traceback_text
 
 
 def test_output_lock_is_exclusive(tmp_path) -> None:
