@@ -74,8 +74,22 @@ def test_authority_reconciliation_ignores_identity_only_differences() -> None:
     result = _reconcile_authorities(
         (run("native"),),
         (run("aggregated"),),
-        ({"path_kind": "BASELINE", "net_return": "0.01", "maximum_drawdown": "0.02"},),
-        ({"path_kind": "BASELINE", "net_return": "0.01", "maximum_drawdown": "0.02"},),
+        (
+            {
+                "path_kind": "BASELINE",
+                "net_return": "0.01",
+                "daily_close_max_drawdown": "0.02",
+                "engine_peak_observed_drawdown": "0.03",
+            },
+        ),
+        (
+            {
+                "path_kind": "BASELINE",
+                "net_return": "0.01",
+                "daily_close_max_drawdown": "0.02",
+                "engine_peak_observed_drawdown": "0.03",
+            },
+        ),
     )
 
     assert result["BASELINE"]["economic_outputs_match"] is True

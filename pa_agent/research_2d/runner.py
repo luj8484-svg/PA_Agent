@@ -465,7 +465,11 @@ def _reconcile_authorities(
         )
         metrics_match = all(
             native_metric[path][name] == aggregated_metric[path][name]
-            for name in ("net_return", "maximum_drawdown")
+            for name in (
+                "net_return",
+                "daily_close_max_drawdown",
+                "engine_peak_observed_drawdown",
+            )
         )
         economic_match = (
             native_fill_signature == aggregated_fill_signature
@@ -486,10 +490,24 @@ def _reconcile_authorities(
             "aggregated_net_return": aggregated_metric[path]["net_return"],
             "net_return_difference": Decimal(str(aggregated_metric[path]["net_return"]))
             - Decimal(str(native_metric[path]["net_return"])),
-            "native_maximum_drawdown": native_metric[path]["maximum_drawdown"],
-            "aggregated_maximum_drawdown": aggregated_metric[path]["maximum_drawdown"],
-            "maximum_drawdown_difference": Decimal(str(aggregated_metric[path]["maximum_drawdown"]))
-            - Decimal(str(native_metric[path]["maximum_drawdown"])),
+            "native_daily_close_max_drawdown": native_metric[path]["daily_close_max_drawdown"],
+            "aggregated_daily_close_max_drawdown": aggregated_metric[path][
+                "daily_close_max_drawdown"
+            ],
+            "daily_close_max_drawdown_difference": Decimal(
+                str(aggregated_metric[path]["daily_close_max_drawdown"])
+            )
+            - Decimal(str(native_metric[path]["daily_close_max_drawdown"])),
+            "native_engine_peak_observed_drawdown": native_metric[path][
+                "engine_peak_observed_drawdown"
+            ],
+            "aggregated_engine_peak_observed_drawdown": aggregated_metric[path][
+                "engine_peak_observed_drawdown"
+            ],
+            "engine_peak_observed_drawdown_difference": Decimal(
+                str(aggregated_metric[path]["engine_peak_observed_drawdown"])
+            )
+            - Decimal(str(native_metric[path]["engine_peak_observed_drawdown"])),
             "affected_native_trade_ids": (
                 () if economic_match else tuple(item.origin_candidate_id for item in native.trades)
             ),
@@ -740,7 +758,7 @@ def _conclusion(oos_metrics: list[dict[str, object]], oos_runs: tuple[object, ..
         return "INSUFFICIENT_STATISTICAL_EVIDENCE"
     if any(
         Decimal(str(item["net_return"])) <= 0
-        or Decimal(str(item["maximum_drawdown"])) >= Decimal("0.10")
+        or Decimal(str(item["engine_peak_observed_drawdown"])) >= Decimal("0.10")
         for item in oos_metrics
     ):
         return "STRATEGY_FAILED_BASELINE_VALIDATION"

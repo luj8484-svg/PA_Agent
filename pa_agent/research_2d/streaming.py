@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from itertools import pairwise
 
 from pa_agent.research_backtest.domain.rejections import ExecutionRejection
@@ -23,7 +24,7 @@ from pa_agent.research_backtest.simulation.rejections import (
     apply_rejection_policy,
 )
 
-STREAMING_ADAPTER_VERSION = "RESEARCH_2D_STREAMING_ADAPTER_V1"
+STREAMING_ADAPTER_VERSION = "RESEARCH_2D_STREAMING_ADAPTER_V2_DRAWDOWN_OBSERVATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class StreamPathRun:
     trades: tuple[object, ...]
     planning_outputs: tuple[object, ...]
     daily_equity_points: tuple[object, ...]
+    engine_peak_observed_drawdown: Decimal
     event_counts: tuple[tuple[str, int], ...]
     processed_minute_count: int
     gap_context: tuple[dict[str, object], ...]
@@ -52,6 +54,7 @@ class _Accumulator:
     trades: list[object]
     planning: list[object]
     daily_equity: list[object]
+    engine_peak_observed_drawdown: Decimal
     event_counts: Counter[str]
     gap_context: list[dict[str, object]]
     processed: int = 0
@@ -60,6 +63,9 @@ class _Accumulator:
 
 def _retain(acc: _Accumulator, result: MinuteResult) -> None:
     acc.state = result.state
+    if result.state.peak_equity:
+        drawdown = (result.state.peak_equity - result.state.equity) / result.state.peak_equity
+        acc.engine_peak_observed_drawdown = max(acc.engine_peak_observed_drawdown, drawdown)
     acc.processed += 1
     acc.fills.extend(result.fills)
     acc.ledgers.extend(result.ledger_entries)
@@ -105,6 +111,7 @@ def run_streaming_paths(
             trades=[],
             planning=[],
             daily_equity=[],
+            engine_peak_observed_drawdown=Decimal("0"),
             event_counts=Counter(),
             gap_context=[
                 {
@@ -254,6 +261,7 @@ def run_streaming_paths(
                 trades=tuple(acc.trades),
                 planning_outputs=tuple(acc.planning),
                 daily_equity_points=tuple(acc.daily_equity),
+                engine_peak_observed_drawdown=acc.engine_peak_observed_drawdown,
                 event_counts=tuple(sorted(acc.event_counts.items())),
                 processed_minute_count=acc.processed,
                 gap_context=tuple(acc.gap_context),

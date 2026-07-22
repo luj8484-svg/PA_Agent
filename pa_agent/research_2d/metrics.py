@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from collections import Counter
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from itertools import pairwise
 from statistics import mean, pstdev
 
@@ -13,6 +13,20 @@ from pa_agent.research_backtest.simulation.ledger import LedgerKind
 
 def _ratio(value: Decimal, denominator: Decimal) -> str | None:
     return str(value / denominator) if denominator else None
+
+
+def _rounded_15_significant(value: Decimal) -> Decimal:
+    if not value:
+        return Decimal("0")
+    with localcontext() as context:
+        context.prec = 50
+        context.rounding = ROUND_HALF_EVEN
+        quantum = Decimal("1").scaleb(value.copy_abs().adjusted() - 14)
+        return value.quantize(quantum)
+
+
+def economic_total_cost(*, fees: Decimal, slippage: Decimal, funding_cashflow: Decimal) -> Decimal:
+    return _rounded_15_significant(fees + slippage - funding_cashflow)
 
 
 def summarize_path(
@@ -30,7 +44,7 @@ def summarize_path(
     annualized = (float(final / initial_capital) ** (365.25 / days) - 1) if final > 0 else -1.0
     equities = [initial_capital, *(item.equity for item in run.daily_equity_points), final]
     peak = equities[0]
-    max_drawdown = Decimal("0")
+    daily_close_max_drawdown = Decimal("0")
     dd_start = split_start_utc_ms
     dd_end = split_start_utc_ms
     peak_time = split_start_utc_ms
@@ -43,21 +57,24 @@ def summarize_path(
         if equity > peak:
             peak, peak_time = equity, time
         drawdown = (peak - equity) / peak if peak else Decimal("0")
-        if drawdown > max_drawdown:
-            max_drawdown, dd_start, dd_end = drawdown, peak_time, time
+        if drawdown > daily_close_max_drawdown:
+            daily_close_max_drawdown, dd_start, dd_end = drawdown, peak_time, time
+    engine_peak_observed_drawdown = Decimal(str(run.engine_peak_observed_drawdown))
     daily_returns = [float(right / left - 1) for left, right in pairwise(equities) if left != 0]
     volatility = pstdev(daily_returns) if len(daily_returns) > 1 else 0.0
     downside = [min(value, 0.0) for value in daily_returns]
     downside_dev = math.sqrt(mean(value * value for value in downside)) if downside else 0.0
     sharpe = mean(daily_returns) / volatility * math.sqrt(365.25) if volatility else None
     sortino = mean(daily_returns) / downside_dev * math.sqrt(365.25) if downside_dev else None
-    calmar = annualized / float(max_drawdown) if max_drawdown else None
+    calmar = (
+        annualized / float(engine_peak_observed_drawdown) if engine_peak_observed_drawdown else None
+    )
     wins = [item.net_pnl for item in trades if item.net_pnl > 0]
     losses = [item.net_pnl for item in trades if item.net_pnl < 0]
     gross_profit = sum(wins, Decimal("0"))
     gross_loss = -sum(losses, Decimal("0"))
     fees = sum((item.entry_fee + item.exit_fee for item in trades), Decimal("0"))
-    funding = sum((item.funding for item in trades), Decimal("0"))
+    funding_cashflow = sum((item.funding for item in trades), Decimal("0"))
     slippage = Decimal("0")
     for item in trades:
         rate = slippage_rates[item.symbol]
@@ -91,9 +108,14 @@ def summarize_path(
         "net_return": str(net_return),
         "annualized_return": annualized,
         "annualization_qualification": annualization_reason,
-        "maximum_drawdown": str(max_drawdown),
-        "maximum_drawdown_start_utc_ms": dd_start,
-        "maximum_drawdown_end_utc_ms": dd_end,
+        "daily_close_max_drawdown": str(
+            _rounded_15_significant(daily_close_max_drawdown).normalize()
+        ),
+        "daily_close_max_drawdown_start_utc_ms": dd_start,
+        "daily_close_max_drawdown_end_utc_ms": dd_end,
+        "engine_peak_observed_drawdown": str(
+            _rounded_15_significant(engine_peak_observed_drawdown).normalize()
+        ),
         "sharpe": sharpe,
         "sortino": sortino,
         "calmar": calmar,
@@ -109,8 +131,14 @@ def summarize_path(
         "average_holding_minutes": (sum(holding) / len(holding) / 60_000 if holding else None),
         "fees": str(fees),
         "slippage": str(slippage),
-        "funding": str(funding),
-        "total_cost": str(fees + slippage + funding),
+        "funding_cashflow": str(funding_cashflow),
+        "economic_total_cost": str(
+            economic_total_cost(
+                fees=fees,
+                slippage=slippage,
+                funding_cashflow=funding_cashflow,
+            )
+        ),
         "execution_rejections": dict(sorted(rejections.items())),
         "processed_minute_count": run.processed_minute_count,
         "split_end_utc_ms": split_end_utc_ms,
