@@ -79,15 +79,15 @@ class OutputRootLockedError(RuntimeError):
 
 def formal_task_keys() -> tuple[str, ...]:
     return (
-        "TRAINING:NATIVE_PRIMARY:BASE_1X",
-        "TRAINING:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
-        "VALIDATION:NATIVE_PRIMARY:BASE_1X",
-        "VALIDATION:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
         "OOS:NATIVE_PRIMARY:BASE_1X",
-        "OOS:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
         "OOS:NATIVE_PRIMARY:COMBINED_2X",
         "OOS:NATIVE_PRIMARY:FEE_SLIPPAGE_3X",
         "OOS:NATIVE_PRIMARY:FUNDING_2X",
+        "OOS:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
+        "VALIDATION:NATIVE_PRIMARY:BASE_1X",
+        "VALIDATION:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
+        "TRAINING:NATIVE_PRIMARY:BASE_1X",
+        "TRAINING:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
     )
 
 
@@ -276,6 +276,7 @@ def run_tasks(
     task_timeout_seconds: float,
     no_progress_timeout_seconds: float,
     worker=None,
+    result_validator=None,
 ) -> TaskExecutionBatch:
     if max_workers not in {1, 2, 6}:
         raise ValueError("max_workers must be one of 1, 2, or 6")
@@ -331,6 +332,11 @@ def run_tasks(
                     raise ParallelEvaluationError(
                         key, f"worker returned mismatched task key {result.key!r}"
                     )
+                if result_validator is not None:
+                    try:
+                        result_validator(result)
+                    except BaseException as exc:
+                        raise ParallelEvaluationError(key, traceback.format_exc()) from exc
                 results[key] = result
             now = time.monotonic()
             for future in pending:

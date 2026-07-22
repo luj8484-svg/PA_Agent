@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--max-workers", type=int, choices=(1, 2, 6), default=1)
     parser.add_argument("--task-timeout-seconds", type=float, default=28_800)
     parser.add_argument("--no-progress-timeout-seconds", type=float, default=600)
+    parser.add_argument("--known-diagnostic-gap-report", type=Path)
     args = parser.parse_args()
     commit = (
         args.code_commit
@@ -36,6 +37,11 @@ def main() -> int:
         max_workers=args.max_workers,
         task_timeout_seconds=args.task_timeout_seconds,
         no_progress_timeout_seconds=args.no_progress_timeout_seconds,
+        known_diagnostic_gap_report=(
+            args.known_diagnostic_gap_report.resolve()
+            if args.known_diagnostic_gap_report is not None
+            else None
+        ),
     )
     print(output)
     return 0

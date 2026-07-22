@@ -11,7 +11,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from pa_agent.research_2d.approval import sha256_file, verify_data_approval_manifest
@@ -36,6 +38,7 @@ from pa_agent.research_2d.identity import (
 from pa_agent.research_2d.metrics import oos_confidence_intervals, summarize_path
 from pa_agent.research_2d.parallel import (
     EvaluationTask,
+    TaskExecutionBatch,
     exclusive_output_lock,
     formal_task_keys,
     run_tasks,
@@ -43,6 +46,7 @@ from pa_agent.research_2d.parallel import (
 from pa_agent.research_2d.streaming import STREAMING_ADAPTER_VERSION, run_streaming_paths
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
 from pa_agent.research_backtest.domain.config import execution_time_config
+from pa_agent.research_backtest.domain.rejections import ExecutionRejection
 from pa_agent.research_backtest.indicators.numeric import float64_to_decimal_15sig
 from pa_agent.research_backtest.simulation.context import make_production_run_context
 from pa_agent.research_backtest.simulation.domain import make_simulation_config
@@ -60,6 +64,267 @@ from pa_agent.research_backtest.versions import (
 AUTHORITIES = ("NATIVE_PRIMARY", "AGGREGATED_AUDIT_SENSITIVITY")
 INITIAL_CAPITAL = Decimal("10000")
 BASE_SLIPPAGE = {"BTCUSDT": Decimal("0.0001"), "ETHUSDT": Decimal("0.0002")}
+
+
+class TaskDisposition(StrEnum):
+    COMPLETED = "COMPLETED"
+    DIAGNOSTIC_DATA_GAP = "DIAGNOSTIC_DATA_GAP"
+
+
+class FormalEvaluationGateError(RuntimeError):
+    def __init__(self, task_key: str, reason: str) -> None:
+        self.task_key = task_key
+        self.reason = reason
+        self.conclusion = "DATA_EXECUTION_INVALID"
+        super().__init__(f"DATA_EXECUTION_INVALID:{task_key}:{reason}")
+
+
+AUTHORITATIVE_REQUIRED = frozenset(
+    {
+        "OOS:NATIVE_PRIMARY:BASE_1X",
+        "OOS:NATIVE_PRIMARY:COMBINED_2X",
+        "OOS:NATIVE_PRIMARY:FEE_SLIPPAGE_3X",
+        "OOS:NATIVE_PRIMARY:FUNDING_2X",
+    }
+)
+SENSITIVITY_REQUIRED = frozenset({"OOS:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X"})
+DIAGNOSTIC_NON_GATING = frozenset(
+    {
+        "VALIDATION:NATIVE_PRIMARY:BASE_1X",
+        "VALIDATION:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
+        "TRAINING:NATIVE_PRIMARY:BASE_1X",
+        "TRAINING:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X",
+    }
+)
+
+
+def _task_class(task_key: str) -> str:
+    if task_key in AUTHORITATIVE_REQUIRED:
+        return "AUTHORITATIVE_REQUIRED"
+    if task_key in SENSITIVITY_REQUIRED:
+        return "SENSITIVITY_REQUIRED"
+    if task_key in DIAGNOSTIC_NON_GATING:
+        return "DIAGNOSTIC_NON_GATING"
+    raise FormalEvaluationGateError(task_key, "UNKNOWN_TASK_CLASS")
+
+
+def assess_formal_task_result(result: object) -> SimpleNamespace:
+    task_key = str(result.key)
+    task_class = _task_class(task_key)
+    runs = tuple(result.runs)
+    metrics = tuple(result.metrics)
+    if len(runs) != len(metrics) or not runs:
+        raise FormalEvaluationGateError(task_key, "PATH_RESULT_CARDINALITY_INVALID")
+    if {run.path_kind.value for run in runs} != {"BASELINE", "CONSERVATIVE"}:
+        raise FormalEvaluationGateError(task_key, "PATH_RESULT_SET_INVALID")
+    invalid_reasons = tuple(
+        run.path_result.invalid_reason
+        for run in runs
+        if run.path_result.path_state.value == "INVALID"
+    )
+    has_data_invalid = any(
+        isinstance(item, ExecutionRejection) and item.reason.value == "DATA_INVALID"
+        for run in runs
+        for item in run.planning_outputs
+    )
+    incomplete = any(
+        run.path_result.final_processed_time_utc_ms != int(metric["split_end_utc_ms"]) + 1
+        for run, metric in zip(runs, metrics, strict=True)
+    )
+    non_valid = any(run.path_result.path_state.value != "VALID" for run in runs)
+    mark_gap_only = bool(invalid_reasons) and all(
+        isinstance(reason, str) and reason.startswith("MARK_GAP_AFFECTS_POSITION")
+        for reason in invalid_reasons
+    )
+    if (
+        task_class == "DIAGNOSTIC_NON_GATING"
+        and mark_gap_only
+        and not has_data_invalid
+        and all(run.path_result.path_state.value == "INVALID" for run in runs)
+    ):
+        return SimpleNamespace(
+            task_key=task_key,
+            task_class=task_class,
+            status=TaskDisposition.DIAGNOSTIC_DATA_GAP,
+        )
+    if has_data_invalid or non_valid or incomplete:
+        reason = (
+            "DATA_INVALID"
+            if has_data_invalid
+            else invalid_reasons[0]
+            if invalid_reasons
+            else "SPLIT_NOT_COMPLETED"
+        )
+        raise FormalEvaluationGateError(task_key, str(reason))
+    return SimpleNamespace(
+        task_key=task_key,
+        task_class=task_class,
+        status=TaskDisposition.COMPLETED,
+    )
+
+
+def performance_results(results: tuple[object, ...]) -> tuple[object, ...]:
+    return tuple(
+        result
+        for result in results
+        if assess_formal_task_result(result).status is TaskDisposition.COMPLETED
+    )
+
+
+def run_prioritized_task_phases(
+    tasks: tuple[object, ...],
+    *,
+    max_workers: int,
+    task_timeout_seconds: float,
+    no_progress_timeout_seconds: float,
+    batch_runner=run_tasks,
+) -> TaskExecutionBatch:
+    by_phase = (
+        tuple(task for task in tasks if str(task.key).startswith("OOS:")),
+        tuple(task for task in tasks if str(task.key).startswith("VALIDATION:")),
+        tuple(task for task in tasks if str(task.key).startswith("TRAINING:")),
+    )
+    results = []
+    batches = []
+    for phase in by_phase:
+        if not phase:
+            continue
+        batch = batch_runner(
+            phase,
+            max_workers=max_workers,
+            task_timeout_seconds=task_timeout_seconds,
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
+            result_validator=assess_formal_task_result,
+        )
+        batches.append(batch)
+        results.extend(batch.results)
+    result_by_key = {str(result.key): result for result in results}
+    return TaskExecutionBatch(
+        results=tuple(result_by_key[str(task.key)] for task in tasks),
+        multiprocessing_start_method=batches[0].multiprocessing_start_method,
+        parent_peak_rss_bytes=max(batch.parent_peak_rss_bytes for batch in batches),
+        aggregate_worker_peak_rss_bytes=max(
+            batch.aggregate_worker_peak_rss_bytes for batch in batches
+        ),
+        heartbeats=tuple(item for batch in batches for item in batch.heartbeats),
+    )
+
+
+def load_known_training_gap_evidence(
+    mark_gap_path: Path, *, approved_data_bundle_hash: str
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    mark_gap_path = mark_gap_path.resolve()
+    directory = mark_gap_path.parent
+    experiment_path = directory / "experiment_manifest.json"
+    result_path = directory / "result_manifest.json"
+    native_path = directory / "native_primary_metrics.json"
+    aggregated_path = directory / "aggregated_sensitivity_metrics.json"
+    for path in (mark_gap_path, experiment_path, result_path, native_path, aggregated_path):
+        if not path.is_file():
+            raise ValueError(f"known diagnostic evidence missing: {path.name}")
+    experiment = json.loads(experiment_path.read_text(encoding="utf-8"))
+    result_manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    identity = experiment.get("identity", {})
+    expected_identity = {
+        "approved_data_bundle_hash": approved_data_bundle_hash,
+        "strategy_version": STRATEGY_VERSION,
+        "two_c_version": MINUTE_ENGINE_VERSION,
+    }
+    for name, expected in expected_identity.items():
+        if identity.get(name) != expected:
+            raise ValueError(f"known diagnostic evidence identity mismatch: {name}")
+    declared_hashes = result_manifest.get("file_sha256", {})
+    for path in (mark_gap_path, native_path, aggregated_path):
+        if declared_hashes.get(path.name) != sha256_file(path):
+            raise ValueError(f"known diagnostic evidence hash mismatch: {path.name}")
+    gap_impact = json.loads(mark_gap_path.read_text(encoding="utf-8"))
+    metrics_by_file = {
+        "NATIVE_PRIMARY": json.loads(native_path.read_text(encoding="utf-8")),
+        "AGGREGATED_AUDIT_SENSITIVITY": json.loads(aggregated_path.read_text(encoding="utf-8")),
+    }
+    diagnostics: dict[str, dict[str, object]] = {}
+    for authority, metrics_file in metrics_by_file.items():
+        key = f"TRAINING:{authority}:BASE_1X"
+        path_metrics = metrics_file.get(key)
+        path_gaps = gap_impact.get(key)
+        if not isinstance(path_metrics, list) or not isinstance(path_gaps, dict):
+            raise ValueError(f"known diagnostic evidence incomplete: {key}")
+        if {item.get("path_kind") for item in path_metrics} != {
+            "BASELINE",
+            "CONSERVATIVE",
+        }:
+            raise ValueError(f"known diagnostic path set mismatch: {key}")
+        if any(
+            item.get("path_state") != "INVALID"
+            or not str(item.get("invalid_reason", "")).startswith("MARK_GAP_AFFECTS_POSITION")
+            for item in path_metrics
+        ):
+            raise ValueError(f"known diagnostic reason mismatch: {key}")
+        material_gaps = [
+            gap
+            for gaps in path_gaps.values()
+            for gap in gaps
+            if gap.get("open_position_crosses") and int(gap.get("invalid_episode_count", 0)) > 0
+        ]
+        if not material_gaps:
+            raise ValueError(f"known diagnostic material gap missing: {key}")
+        first_start = min(int(item["start_utc_ms"]) for item in material_gaps)
+        first_gaps = [item for item in material_gaps if int(item["start_utc_ms"]) == first_start]
+        processed_counts = {int(item["processed_minute_count"]) for item in path_metrics}
+        if len(processed_counts) != 1:
+            raise ValueError(f"known diagnostic processed count mismatch: {key}")
+        affected_symbols = sorted({str(item["symbol"]) for item in first_gaps})
+        diagnostics[key] = {
+            "status": TaskDisposition.DIAGNOSTIC_DATA_GAP,
+            "first_invalid_time_utc_ms": first_start,
+            "gap_start_utc_ms": first_start,
+            "gap_end_utc_ms": max(int(item["end_utc_ms"]) for item in first_gaps),
+            "affected_symbols": affected_symbols,
+            "affected_positions": [
+                {"symbol": symbol, "open_position_crosses": True} for symbol in affected_symbols
+            ],
+            "processed_minute_count": processed_counts.pop(),
+            "path_kinds": ["BASELINE", "CONSERVATIVE"],
+        }
+    binding = {
+        "schema_version": "KNOWN_DIAGNOSTIC_GAP_EVIDENCE_V1",
+        "source_experiment_id": experiment["computational_experiment_id"],
+        "approved_data_bundle_hash": approved_data_bundle_hash,
+        "mark_gap_impact_sha256": sha256_file(mark_gap_path),
+        "source_result_manifest_sha256": sha256_file(result_path),
+        "strategy_version": STRATEGY_VERSION,
+        "two_c_version": MINUTE_ENGINE_VERSION,
+    }
+    return diagnostics, binding
+
+
+def diagnostic_gap_record(result: object) -> dict[str, object]:
+    disposition = assess_formal_task_result(result)
+    if disposition.status is not TaskDisposition.DIAGNOSTIC_DATA_GAP:
+        raise ValueError("result is not a diagnostic data gap")
+    material_gaps = [
+        gap
+        for run in result.runs
+        for gap in run.gap_context
+        if gap.get("open_position_crosses") and int(gap.get("invalid_episode_count", 0)) > 0
+    ]
+    first_invalid = min(int(run.path_result.final_processed_time_utc_ms) for run in result.runs)
+    first_gaps = [gap for gap in material_gaps if int(gap["start_utc_ms"]) == first_invalid]
+    affected_symbols = sorted({str(item["symbol"]) for item in first_gaps})
+    return {
+        "status": TaskDisposition.DIAGNOSTIC_DATA_GAP,
+        "first_invalid_time_utc_ms": first_invalid,
+        "gap_start_utc_ms": first_invalid,
+        "gap_end_utc_ms": max(int(item["end_utc_ms"]) for item in first_gaps),
+        "affected_symbols": affected_symbols,
+        "affected_positions": [
+            {"symbol": symbol, "open_position_crosses": True} for symbol in affected_symbols
+        ],
+        "processed_minute_count": min(
+            int(item["processed_minute_count"]) for item in result.metrics
+        ),
+        "path_kinds": sorted(run.path_kind.value for run in result.runs),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +763,7 @@ def run_baseline_evaluation(
     task_timeout_seconds: float = 28_800,
     no_progress_timeout_seconds: float = 600,
     diagnostics_root: Path | None = None,
+    known_diagnostic_gap_report: Path | None = None,
 ) -> Path:
     with exclusive_output_lock(output_root):
         existing_temporaries = {
@@ -512,6 +778,7 @@ def run_baseline_evaluation(
                 task_timeout_seconds=task_timeout_seconds,
                 no_progress_timeout_seconds=no_progress_timeout_seconds,
                 diagnostics_root=diagnostics_root,
+                known_diagnostic_gap_report=known_diagnostic_gap_report,
             )
         except BaseException:
             for path in output_root.glob(".*.tmp"):
@@ -529,9 +796,17 @@ def _run_baseline_evaluation_locked(
     task_timeout_seconds: float,
     no_progress_timeout_seconds: float,
     diagnostics_root: Path | None,
+    known_diagnostic_gap_report: Path | None,
 ) -> Path:
     started_monotonic = time.perf_counter()
     approval = verify_data_approval_manifest(root / "data_approval_manifest_v1.json")
+    diagnostic_statuses: dict[str, dict[str, object]] = {}
+    diagnostic_evidence = None
+    if known_diagnostic_gap_report is not None:
+        diagnostic_statuses, diagnostic_evidence = load_known_training_gap_evidence(
+            known_diagnostic_gap_report,
+            approved_data_bundle_hash=approval.manifest["hybrid_historical_data_bundle_hash"],
+        )
     split_manifest_path = root / "experiment_split_candidate_v3.json"
     split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
     splits = _splits(split_manifest)
@@ -574,56 +849,55 @@ def _run_baseline_evaluation_locked(
         "scenarios": ["BASE_1X", "COMBINED_2X", "FEE_SLIPPAGE_3X", "FUNDING_2X"],
         "streaming_adapter_version": STREAMING_ADAPTER_VERSION,
         "permanent_watermarks": approval.manifest["permanent_watermarks"],
+        "known_diagnostic_gap_evidence": diagnostic_evidence,
     }
     all_metrics: dict[str, Any] = {}
     all_runs: dict[tuple[str, str, str], tuple[object, ...]] = {}
     candidates_meta = {}
     benchmarks = {}
     tasks = []
-    prepared: dict[tuple[str, str], tuple[object, ...]] = {}
     training_start = splits[0].start_utc_ms
     base = Scenario("BASE_1X", Decimal("1"), Decimal("1"))
-    for split in splits:
-        for authority in AUTHORITIES:
-            candidates, trends, counts, daily = _load_candidates(
-                root,
-                split,
-                authority,
-                training_start,
-                code_commit,
-                approval.manifest["dependency_lock_hash"],
-            )
-            evidence_data = _market_evidence(root, split, candidates, trends)
-            key = f"{split.name}:{authority}:BASE_1X"
-            tasks.append(
-                EvaluationTask(
-                    key=key,
-                    root=root,
-                    split=split,
-                    authority=authority,
-                    scenario=base,
-                    candidates=candidates,
-                    trends=trends,
-                    evidence_data=evidence_data,
-                    experiment_id=experiment_id,
-                    approval_hash=approval.manifest_hash,
-                    code_commit=code_commit,
-                    dependency_lock_hash=approval.manifest["dependency_lock_hash"],
-                )
-            )
-            prepared[(split.name, authority)] = (candidates, trends, evidence_data)
-            candidates_meta[f"{split.name}:{authority}"] = {
-                "actionable_count": len(candidates),
-                "market_view_counts": counts,
-                "candidate_content_hash": canonical_sha256(candidates),
-            }
-            benchmarks[f"{split.name}:{authority}"] = benchmark_metrics(
-                daily,
-                split_start_utc_ms=split.start_utc_ms,
-                split_end_utc_ms=split.end_utc_ms,
-            )
-    oos = splits[-1]
-    native_candidates, native_trends, native_evidence = prepared[("OOS", "NATIVE_PRIMARY")]
+
+    def prepare_base_task(split: Split, authority: str) -> EvaluationTask:
+        candidates, trends, counts, daily = _load_candidates(
+            root,
+            split,
+            authority,
+            training_start,
+            code_commit,
+            approval.manifest["dependency_lock_hash"],
+        )
+        evidence_data = _market_evidence(root, split, candidates, trends)
+        candidates_meta[f"{split.name}:{authority}"] = {
+            "actionable_count": len(candidates),
+            "market_view_counts": counts,
+            "candidate_content_hash": canonical_sha256(candidates),
+        }
+        benchmarks[f"{split.name}:{authority}"] = benchmark_metrics(
+            daily,
+            split_start_utc_ms=split.start_utc_ms,
+            split_end_utc_ms=split.end_utc_ms,
+        )
+        return EvaluationTask(
+            key=f"{split.name}:{authority}:BASE_1X",
+            root=root,
+            split=split,
+            authority=authority,
+            scenario=base,
+            candidates=candidates,
+            trends=trends,
+            evidence_data=evidence_data,
+            experiment_id=experiment_id,
+            approval_hash=approval.manifest_hash,
+            code_commit=code_commit,
+            dependency_lock_hash=approval.manifest["dependency_lock_hash"],
+        )
+
+    split_by_name = {split.name: split for split in splits}
+    oos = split_by_name["OOS"]
+    oos_native = prepare_base_task(oos, "NATIVE_PRIMARY")
+    tasks.append(oos_native)
     stresses = (
         Scenario("COMBINED_2X", Decimal("2"), Decimal("2")),
         Scenario("FEE_SLIPPAGE_3X", Decimal("1"), Decimal("1"), Decimal("3"), Decimal("3")),
@@ -637,18 +911,25 @@ def _run_baseline_evaluation_locked(
                 split=oos,
                 authority="NATIVE_PRIMARY",
                 scenario=scenario,
-                candidates=native_candidates,
-                trends=native_trends,
-                evidence_data=native_evidence,
+                candidates=oos_native.candidates,
+                trends=oos_native.trends,
+                evidence_data=oos_native.evidence_data,
                 experiment_id=experiment_id,
                 approval_hash=approval.manifest_hash,
                 code_commit=code_commit,
                 dependency_lock_hash=approval.manifest["dependency_lock_hash"],
             )
         )
-    if tuple(task.key for task in tasks) != formal_task_keys():
+    tasks.append(prepare_base_task(oos, "AGGREGATED_AUDIT_SENSITIVITY"))
+    validation = split_by_name["VALIDATION"]
+    tasks.extend(prepare_base_task(validation, authority) for authority in AUTHORITIES)
+    if not diagnostic_statuses:
+        training = split_by_name["TRAINING"]
+        tasks.extend(prepare_base_task(training, authority) for authority in AUTHORITIES)
+    expected_task_keys = tuple(key for key in formal_task_keys() if key not in diagnostic_statuses)
+    if tuple(task.key for task in tasks) != expected_task_keys:
         raise AssertionError("formal task registry differs from frozen order")
-    batch = run_tasks(
+    batch = run_prioritized_task_phases(
         tuple(tasks),
         max_workers=max_workers,
         task_timeout_seconds=task_timeout_seconds,
@@ -656,6 +937,10 @@ def _run_baseline_evaluation_locked(
     )
     cost_stress = {}
     for result in batch.results:
+        disposition = assess_formal_task_result(result)
+        if disposition.status is TaskDisposition.DIAGNOSTIC_DATA_GAP:
+            diagnostic_statuses[result.key] = diagnostic_gap_record(result)
+            continue
         split_name, authority, scenario_name = result.key.split(":")
         all_runs[(split_name, authority, scenario_name)] = result.runs
         if scenario_name == "BASE_1X":
@@ -680,6 +965,8 @@ def _run_baseline_evaluation_locked(
             all_metrics[f"{split.name}:AGGREGATED_AUDIT_SENSITIVITY:BASE_1X"],
         )
         for split in splits
+        if (split.name, "NATIVE_PRIMARY", "BASE_1X") in all_runs
+        and (split.name, "AGGREGATED_AUDIT_SENSITIVITY", "BASE_1X") in all_runs
     }
     gap_impact = {
         ":".join(key): {run.path_kind.value: run.gap_context for run in runs}
@@ -696,6 +983,7 @@ def _run_baseline_evaluation_locked(
         "oos_native_primary": oos_metrics,
         "confidence_intervals": confidence,
         "candidate_summary": candidates_meta,
+        "diagnostic_status": diagnostic_statuses,
         "watermarks": approval.manifest["permanent_watermarks"],
     }
     files = {
@@ -706,6 +994,7 @@ def _run_baseline_evaluation_locked(
         "aggregated_sensitivity_metrics.json": aggregated_metrics,
         "mark_gap_impact.json": gap_impact,
         "rejection_summary.json": rejection_summary,
+        "diagnostic_status.json": diagnostic_statuses,
         "benchmark_comparison.json": benchmarks,
         "cost_stress.json": cost_stress,
     }
