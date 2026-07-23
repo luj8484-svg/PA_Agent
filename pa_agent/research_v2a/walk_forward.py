@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import time
+from collections import Counter
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
 from pa_agent.research_2d.approval import verify_data_approval_manifest
+from pa_agent.research_2d.parallel import (
+    WatchdogConfig,
+    current_rss_bytes,
+    exclusive_output_lock,
+    peak_rss_bytes,
+    physical_memory_status,
+    pickle_size,
+    run_tasks,
+)
 from pa_agent.research_2d.runner import (
     Scenario,
     Split,
@@ -13,14 +25,21 @@ from pa_agent.research_2d.runner import (
     _run_scenario,
 )
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
-from pa_agent.research_v2a.domain import StrategyIdentity, WalkForwardFold
+from pa_agent.research_backtest.simulation.domain import PathState
+from pa_agent.research_v2a.domain import (
+    WALK_FORWARD_FOLDS,
+    StrategyIdentity,
+    WalkForwardFold,
+)
 from pa_agent.research_v2a.identity import ExperimentIdentity
 from pa_agent.research_v2a.preflight import (
     PREFLIGHT_FAILED,
     CandidatePreflightReport,
     CandidatePreflightStrategyResult,
     FoldPreflightResult,
+    prepare_candidate_preflight,
 )
+from pa_agent.research_v2a.reporting import publish_walk_forward_report
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +52,7 @@ class WalkForwardTask:
     initial_capital: Decimal
     accepted_candidate_ids: tuple[str, ...]
     accepted_candidate_content_hash: str
+    experiment_identity: ExperimentIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +62,37 @@ class WalkForwardTaskResult:
     strategy_identity: StrategyIdentity
     runs: tuple[object, ...]
     metrics: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WalkForwardWorkerPayload:
+    key: str
+    task: WalkForwardTask
+    root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class WalkForwardWorkerResult:
+    key: str
+    task_result: WalkForwardTaskResult
+    payload_pickle_bytes: int
+    result_pickle_bytes: int
+    worker_pid: int
+    worker_peak_rss_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class CapacityProbeReport:
+    task_key: str
+    elapsed_seconds: Decimal
+    cpu_seconds: Decimal
+    parent_peak_rss_bytes: int
+    worker_peak_rss_bytes: int
+    payload_pickle_bytes: int
+    result_pickle_bytes: int
+    output_size_bytes: int
+    hard_timeout_seconds: Decimal
+    no_progress_timeout_seconds: None
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,3 +474,309 @@ def run_walk_forward_task(
         runs=tuple(runs),
         metrics=tuple(metrics),
     )
+
+
+def execute_walk_forward_task(
+    payload: WalkForwardWorkerPayload,
+    progress_queue=None,
+    watchdog_config: WatchdogConfig | None = None,
+) -> WalkForwardWorkerResult:
+    if watchdog_config is None:
+        raise ValueError("worker watchdog config is required")
+    if watchdog_config.no_progress_timeout_seconds is not None:
+        raise ValueError("V2-A no-progress watchdog must remain disabled")
+    identity = payload.task.experiment_identity
+    if identity is None:
+        raise ValueError("V2-A task is missing its experiment identity")
+    print(
+        f"worker_start task_key={payload.key} "
+        f"hard_timeout_seconds={watchdog_config.hard_timeout_seconds} "
+        "no_progress_timeout_seconds=None",
+        flush=True,
+    )
+    if progress_queue is not None:
+        progress_queue.put((payload.key, "STARTED", 0, None, os.getpid(), current_rss_bytes()))
+    task_result = run_walk_forward_task(
+        payload.task,
+        root=payload.root,
+        experiment_identity=identity,
+    )
+    result = WalkForwardWorkerResult(
+        key=payload.key,
+        task_result=task_result,
+        payload_pickle_bytes=pickle_size(payload),
+        result_pickle_bytes=0,
+        worker_pid=os.getpid(),
+        worker_peak_rss_bytes=peak_rss_bytes(),
+    )
+    result = replace(result, result_pickle_bytes=pickle_size(result))
+    if progress_queue is not None:
+        progress_queue.put((payload.key, "COMPLETED", 0, None, os.getpid(), current_rss_bytes()))
+    return result
+
+
+def run_capacity_probe(
+    *,
+    task: WalkForwardTask,
+    root: Path,
+    diagnostics_output: Path,
+    hard_timeout_seconds: float = 21_600,
+    no_progress_timeout_seconds: None = None,
+) -> CapacityProbeReport:
+    if task.key != "F4:V1_BASELINE:NATIVE_PRIMARY:BASE_1X":
+        raise ValueError("capacity probe must run only F4 V1_BASELINE")
+    if task.fold.fold_id != "F4" or task.strategy_identity is not StrategyIdentity.V1_BASELINE:
+        raise ValueError("capacity probe task identity must be F4 V1_BASELINE")
+    if no_progress_timeout_seconds is not None:
+        raise ValueError("V2-A no-progress watchdog is permanently disabled")
+    if hard_timeout_seconds != 21_600:
+        raise ValueError("V2-A hard timeout is frozen at 21600 seconds")
+    if task.experiment_identity is None:
+        raise ValueError("capacity probe task requires experiment identity")
+    payload = WalkForwardWorkerPayload(task.key, task, root)
+    started = time.perf_counter()
+    cpu_started = time.process_time()
+    batch = run_tasks(
+        (payload,),
+        max_workers=1,
+        hard_timeout_seconds=hard_timeout_seconds,
+        no_progress_timeout_seconds=None,
+        worker=execute_walk_forward_task,
+    )
+    elapsed = Decimal(str(time.perf_counter() - started))
+    cpu = Decimal(str(time.process_time() - cpu_started))
+    result = batch.results[0]
+    report = CapacityProbeReport(
+        task_key=task.key,
+        elapsed_seconds=elapsed,
+        cpu_seconds=cpu,
+        parent_peak_rss_bytes=batch.parent_peak_rss_bytes,
+        worker_peak_rss_bytes=result.worker_peak_rss_bytes,
+        payload_pickle_bytes=pickle_size(payload),
+        result_pickle_bytes=result.result_pickle_bytes,
+        output_size_bytes=result.result_pickle_bytes,
+        hard_timeout_seconds=Decimal(str(hard_timeout_seconds)),
+        no_progress_timeout_seconds=None,
+    )
+    diagnostics_output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = diagnostics_output.with_suffix(diagnostics_output.suffix + ".tmp")
+    from pa_agent.research_backtest.domain.canonical import canonical_dumps
+
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(canonical_dumps(report) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, diagnostics_output)
+    return report
+
+
+def run_v2a_candidate_preflight(*, root: Path, output_root: Path, code_commit: str) -> Path:
+    bundle = prepare_candidate_preflight(root=root, code_commit=code_commit)
+    with exclusive_output_lock(output_root.parent):
+        published = publish_walk_forward_report(
+            output_dir=output_root,
+            canonical_economics={
+                "preflight": bundle.report,
+                "experiment_identity": bundle.experiment_identity,
+            },
+            diagnostics={"minute_replay_performed": False},
+        )
+    return published.output_dir
+
+
+def _fold_performance(result: WalkForwardTaskResult) -> FoldPerformance:
+    if len(result.runs) != 2 or len(result.metrics) != 2:
+        raise ValueError(f"{result.key}: both ambiguity paths are required")
+    run_by_path = {run.path_kind.value: run for run in result.runs}
+    metric_by_path = {str(metric["path_kind"]): metric for metric in result.metrics}
+    if set(run_by_path) != {"BASELINE", "CONSERVATIVE"}:
+        raise ValueError(f"{result.key}: ambiguity path set is incomplete")
+    baseline = run_by_path["BASELINE"]
+    metric = metric_by_path["BASELINE"]
+    trades = tuple(baseline.trades)
+    symbol_pnl = Counter()
+    symbol_counts = Counter()
+    side_pnl = Counter()
+    side_counts = Counter()
+    for trade in trades:
+        symbol_pnl[trade.symbol] += trade.net_pnl
+        symbol_counts[trade.symbol] += 1
+        side_pnl[trade.side.value] += trade.net_pnl
+        side_counts[trade.side.value] += 1
+    states = tuple(run.path_result.path_state for run in result.runs)
+    reasons = tuple(
+        str(run.path_result.invalid_reason) for run in result.runs if run.path_result.invalid_reason
+    )
+    expected_end = int(metric["split_end_utc_ms"]) + 1
+    reached_end = all(
+        run.path_result.final_processed_time_utc_ms == expected_end for run in result.runs
+    )
+    return FoldPerformance(
+        fold_id=result.fold_id,
+        net_pnl=sum((trade.net_pnl for trade in trades), Decimal("0")),
+        gross_profit=sum((trade.net_pnl for trade in trades if trade.net_pnl > 0), Decimal("0")),
+        gross_loss=sum((trade.net_pnl for trade in trades if trade.net_pnl < 0), Decimal("0")),
+        max_drawdown=Decimal(str(metric["engine_peak_observed_drawdown"])),
+        trade_count=len(trades),
+        symbol_net_pnl=tuple((symbol, symbol_pnl[symbol]) for symbol in ("BTCUSDT", "ETHUSDT")),
+        symbol_trade_counts=tuple(
+            (symbol, symbol_counts[symbol]) for symbol in ("BTCUSDT", "ETHUSDT")
+        ),
+        side_net_pnl=tuple((side, side_pnl[side]) for side in ("LONG", "SHORT")),
+        side_trade_counts=tuple((side, side_counts[side]) for side in ("LONG", "SHORT")),
+        reached_fold_end=reached_end,
+        halted=any(state is PathState.HALTED for state in states),
+        data_invalid=any("DATA_INVALID" in reason for reason in reasons),
+        invariant_failures=tuple(
+            reason
+            for reason in reasons
+            if "DATA_INVALID" not in reason and "MARK_GAP" not in reason
+        ),
+    )
+
+
+def _aggregate_strategy_results(
+    results: tuple[WalkForwardWorkerResult, ...],
+    strategy: StrategyIdentity,
+) -> AggregatePerformance:
+    by_fold = {
+        result.task_result.fold_id: _fold_performance(result.task_result)
+        for result in results
+        if result.task_result.strategy_identity is strategy
+    }
+    if set(by_fold) != {"F1", "F2", "F3", "F4"}:
+        raise ValueError(f"{strategy.value}: Fold result set is incomplete")
+    return aggregate_fold_performance(
+        tuple(by_fold[name] for name in ("F1", "F2", "F3", "F4")),
+        initial_capital_per_fold=Decimal("10000"),
+    )
+
+
+def _validate_worker_result(result: WalkForwardWorkerResult) -> None:
+    performance = _fold_performance(result.task_result)
+    if (
+        not performance.reached_fold_end
+        or performance.halted
+        or performance.data_invalid
+        or performance.invariant_failures
+    ):
+        raise ValueError(f"{result.key}: required Walk-forward path is not complete and valid")
+
+
+def _select_worker_count(*, requested: int, probe: CapacityProbeReport) -> int:
+    if requested not in {2, 6}:
+        raise ValueError("V2-A formal max_workers must be 2 or 6")
+    if requested == 2:
+        return 2
+    _, available = physical_memory_status()
+    six_worker_budget = (
+        6 * probe.worker_peak_rss_bytes * Decimal("1.5") + probe.parent_peak_rss_bytes
+    )
+    return 6 if six_worker_budget <= Decimal(available) * Decimal("0.5") else 2
+
+
+def run_v2a_walk_forward(
+    *,
+    root: Path,
+    output_root: Path,
+    code_commit: str,
+    max_workers: int,
+    hard_timeout_seconds: float = 21_600,
+    no_progress_timeout_seconds: None = None,
+) -> Path:
+    if no_progress_timeout_seconds is not None:
+        raise ValueError("V2-A no-progress watchdog is permanently disabled")
+    if hard_timeout_seconds != 21_600:
+        raise ValueError("V2-A hard timeout is frozen at 21600 seconds")
+    if max_workers not in {2, 6}:
+        raise ValueError("V2-A max_workers must be 2 or 6")
+    with exclusive_output_lock(output_root):
+        bundle = prepare_candidate_preflight(root=root, code_commit=code_commit)
+        preflight_dir = output_root / "preflight"
+        publish_walk_forward_report(
+            output_dir=preflight_dir,
+            canonical_economics={
+                "preflight": bundle.report,
+                "experiment_identity": bundle.experiment_identity,
+            },
+            diagnostics={"minute_replay_performed": False},
+        )
+        if bundle.report.status == PREFLIGHT_FAILED:
+            return preflight_dir
+        tasks = tuple(
+            replace(task, experiment_identity=bundle.experiment_identity)
+            for task in build_walk_forward_tasks(
+                preflight=bundle.report,
+                folds=WALK_FORWARD_FOLDS,
+                baseline_scenario=Scenario("BASE_1X", Decimal("1"), Decimal("1")),
+            )
+        )
+        probe_task = next(
+            task for task in tasks if task.key == "F4:V1_BASELINE:NATIVE_PRIMARY:BASE_1X"
+        )
+        probe = run_capacity_probe(
+            task=probe_task,
+            root=root,
+            diagnostics_output=output_root / "diagnostics" / "capacity_probe.json",
+            hard_timeout_seconds=hard_timeout_seconds,
+            no_progress_timeout_seconds=None,
+        )
+        effective_workers = _select_worker_count(requested=max_workers, probe=probe)
+        payloads = tuple(WalkForwardWorkerPayload(task.key, task, root) for task in tasks)
+        batch = run_tasks(
+            payloads,
+            max_workers=effective_workers,
+            hard_timeout_seconds=hard_timeout_seconds,
+            no_progress_timeout_seconds=None,
+            worker=execute_walk_forward_task,
+            result_validator=_validate_worker_result,
+        )
+        results = tuple(batch.results)
+        baseline = _aggregate_strategy_results(results, StrategyIdentity.V1_BASELINE)
+        decisions = {}
+        for strategy in bundle.report.eligible_strategies:
+            if strategy is StrategyIdentity.V1_BASELINE:
+                continue
+            aggregate = _aggregate_strategy_results(results, strategy)
+            decisions[strategy] = evaluate_promotion(
+                candidate=strategy,
+                aggregate=aggregate,
+                baseline=baseline,
+            )
+        q50 = decisions.get(StrategyIdentity.V2A_Q50)
+        q67 = decisions.get(StrategyIdentity.V2A_Q67)
+        if q50 is None:
+            q50 = PromotionDecision(
+                StrategyIdentity.V2A_Q50,
+                baseline,
+                False,
+                (),
+                ("PREFLIGHT_ELIMINATED",),
+            )
+        if q67 is None:
+            q67 = PromotionDecision(
+                StrategyIdentity.V2A_Q67,
+                baseline,
+                False,
+                (),
+                ("PREFLIGHT_ELIMINATED",),
+            )
+        selection = select_walk_forward_candidate(q50=q50, q67=q67)
+        published = publish_walk_forward_report(
+            output_dir=output_root / "results",
+            canonical_economics={
+                "experiment_identity": bundle.experiment_identity,
+                "preflight_hash": bundle.report.content_hash,
+                "baseline": baseline,
+                "promotion_decisions": tuple(decisions.values()),
+                "selection": selection,
+            },
+            diagnostics={
+                "capacity_probe": probe,
+                "effective_workers": effective_workers,
+                "multiprocessing_start_method": batch.multiprocessing_start_method,
+                "parent_peak_rss_bytes": batch.parent_peak_rss_bytes,
+                "aggregate_worker_peak_rss_bytes": batch.aggregate_worker_peak_rss_bytes,
+            },
+        )
+        return published.output_dir

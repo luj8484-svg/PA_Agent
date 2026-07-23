@@ -4,7 +4,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
+from pa_agent.research_2d.approval import verify_data_approval_manifest
+from pa_agent.research_2d.runner import Split, _load_candidates
 from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
 from pa_agent.research_v2a.breakout_quality import (
@@ -13,10 +16,16 @@ from pa_agent.research_v2a.breakout_quality import (
     filter_candidate,
 )
 from pa_agent.research_v2a.domain import (
+    WALK_FORWARD_FOLDS,
     StrategyIdentity,
     WalkForwardFold,
 )
-from pa_agent.research_v2a.identity import ThresholdManifest, build_threshold_manifest
+from pa_agent.research_v2a.identity import (
+    ExperimentIdentity,
+    ThresholdManifest,
+    build_experiment_identity,
+    build_threshold_manifest,
+)
 
 PREFLIGHT_SCHEMA_VERSION = "V2A_CANDIDATE_PREFLIGHT_V1"
 PREFLIGHT_PASSED = "PASS"
@@ -72,6 +81,13 @@ class CandidatePreflightReport:
     @property
     def content_hash(self) -> str:
         return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidatePreflightBundle:
+    report: CandidatePreflightReport
+    experiment_identity: ExperimentIdentity
+    strategy_candidates: tuple[StrategyCandidate, ...]
 
 
 def _ordered(
@@ -270,3 +286,61 @@ def run_candidate_preflight(
         eligible_task_count=task_count,
         elimination_reasons=(*q50_reasons, *q67_reasons),
     )
+
+
+def prepare_candidate_preflight(*, root: Path, code_commit: str) -> CandidatePreflightBundle:
+    approval = verify_data_approval_manifest(root / "data_approval_manifest_v1.json")
+    dataset_content_hash = approval.manifest["hybrid_historical_data_bundle_hash"]
+    dependency_lock_hash = approval.manifest["dependency_lock_hash"]
+    development = Split(
+        "V2A_DEVELOPMENT",
+        WALK_FORWARD_FOLDS[0].training_start_utc_ms,
+        WALK_FORWARD_FOLDS[-1].validation_end_utc_ms,
+    )
+    candidates, _, _, _ = _load_candidates(
+        root,
+        development,
+        "NATIVE_PRIMARY",
+        WALK_FORWARD_FOLDS[0].training_start_utc_ms,
+        code_commit,
+        dependency_lock_hash,
+    )
+    typed_candidates = tuple(candidates)
+    report = run_candidate_preflight(
+        folds=WALK_FORWARD_FOLDS,
+        strategy_candidates=typed_candidates,
+        dataset_content_hash=dataset_content_hash,
+        code_commit=code_commit,
+        dependency_lock_hash=dependency_lock_hash,
+    )
+    manifests = tuple(
+        build_threshold_manifest(
+            fold=fold,
+            training_candidates=tuple(
+                candidate
+                for candidate in typed_candidates
+                if fold.training_start_utc_ms
+                <= candidate.decision_time_utc_ms
+                <= fold.training_end_utc_ms
+            ),
+            dataset_content_hash=dataset_content_hash,
+            candidate_filter_version=CANDIDATE_FILTER_VERSION,
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
+        for fold in WALK_FORWARD_FOLDS
+    )
+    identity = build_experiment_identity(
+        strategy_identities=(
+            StrategyIdentity.V1_BASELINE,
+            StrategyIdentity.V2A_Q50,
+            StrategyIdentity.V2A_Q67,
+        ),
+        fold_manifest_hashes=tuple(canonical_sha256(fold) for fold in WALK_FORWARD_FOLDS),
+        threshold_manifests=manifests,
+        dataset_content_hash=dataset_content_hash,
+        code_commit=code_commit,
+        dependency_lock_hash=dependency_lock_hash,
+        candidate_filter_version=CANDIDATE_FILTER_VERSION,
+    )
+    return CandidatePreflightBundle(report, identity, typed_candidates)

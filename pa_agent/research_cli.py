@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
-import platform
+from pathlib import Path
 
 VERSION = "0.1.0"
 DEPENDENCY_DISTRIBUTIONS = ("pa-agent", "numpy", "pandas")
@@ -42,6 +42,37 @@ def _validate_environment() -> int:
     return 0 if observed.status == "PASS" else 2
 
 
+def _run_v2a_preflight_command(*, root: Path, output_root: Path, code_commit: str) -> Path:
+    from pa_agent.research_v2a.walk_forward import run_v2a_candidate_preflight
+
+    return run_v2a_candidate_preflight(
+        root=root,
+        output_root=output_root,
+        code_commit=code_commit,
+    )
+
+
+def _run_v2a_walk_forward_command(
+    *,
+    root: Path,
+    output_root: Path,
+    code_commit: str,
+    max_workers: int,
+    hard_timeout_seconds: float,
+    no_progress_timeout_seconds: None,
+) -> Path:
+    from pa_agent.research_v2a.walk_forward import run_v2a_walk_forward
+
+    return run_v2a_walk_forward(
+        root=root,
+        output_root=output_root,
+        code_commit=code_commit,
+        max_workers=max_workers,
+        hard_timeout_seconds=hard_timeout_seconds,
+        no_progress_timeout_seconds=no_progress_timeout_seconds,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pa-research",
@@ -53,6 +84,27 @@ def _parser() -> argparse.ArgumentParser:
         "validate-environment",
         help="validate local research imports and dependency versions without network access",
     )
+    preflight = subparsers.add_parser(
+        "v2a-preflight",
+        help="run Candidate-only V2-A Preflight without minute replay",
+    )
+    preflight.add_argument("--data-root", type=Path, required=True)
+    preflight.add_argument("--output-root", type=Path, required=True)
+    preflight.add_argument("--code-commit", required=True)
+    walk_forward = subparsers.add_parser(
+        "v2a-walk-forward",
+        help="run the explicitly approved bounded V2-A Walk-forward workflow",
+    )
+    walk_forward.add_argument("--data-root", type=Path, required=True)
+    walk_forward.add_argument("--output-root", type=Path, required=True)
+    walk_forward.add_argument("--code-commit", required=True)
+    walk_forward.add_argument("--max-workers", type=int, choices=(2, 6), required=True)
+    walk_forward.add_argument(
+        "--hard-timeout-seconds",
+        type=float,
+        choices=(21_600,),
+        default=21_600,
+    )
     return parser
 
 
@@ -62,6 +114,25 @@ def main(argv: list[str] | None = None) -> int:
         return _print_version()
     if args.command == "validate-environment":
         return _validate_environment()
+    if args.command == "v2a-preflight":
+        output = _run_v2a_preflight_command(
+            root=args.data_root,
+            output_root=args.output_root,
+            code_commit=args.code_commit,
+        )
+        print(output)
+        return 0
+    if args.command == "v2a-walk-forward":
+        output = _run_v2a_walk_forward_command(
+            root=args.data_root,
+            output_root=args.output_root,
+            code_commit=args.code_commit,
+            max_workers=args.max_workers,
+            hard_timeout_seconds=args.hard_timeout_seconds,
+            no_progress_timeout_seconds=None,
+        )
+        print(output)
+        return 0
     raise AssertionError(f"unreachable command: {args.command}")
 
 
