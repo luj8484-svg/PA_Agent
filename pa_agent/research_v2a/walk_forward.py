@@ -44,6 +44,263 @@ class WalkForwardTaskResult:
     metrics: tuple[dict[str, object], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class FoldPerformance:
+    fold_id: str
+    net_pnl: Decimal
+    gross_profit: Decimal
+    gross_loss: Decimal
+    max_drawdown: Decimal
+    trade_count: int
+    symbol_net_pnl: tuple[tuple[str, Decimal], ...]
+    symbol_trade_counts: tuple[tuple[str, int], ...]
+    side_net_pnl: tuple[tuple[str, Decimal], ...]
+    side_trade_counts: tuple[tuple[str, int], ...]
+    reached_fold_end: bool
+    halted: bool
+    data_invalid: bool
+    invariant_failures: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.fold_id not in {"F1", "F2", "F3", "F4"}:
+            raise ValueError("unsupported Fold identity")
+        if self.gross_profit < 0 or self.gross_loss > 0:
+            raise ValueError("gross profit/loss signs are invalid")
+        if self.trade_count < 0:
+            raise ValueError("trade_count cannot be negative")
+        if self.max_drawdown < 0:
+            raise ValueError("max_drawdown cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class AggregatePerformance:
+    fold_results: tuple[FoldPerformance, ...]
+    total_net_pnl: Decimal
+    aggregate_return: Decimal
+    total_gross_profit: Decimal
+    total_gross_loss: Decimal
+    aggregate_profit_factor: Decimal | None
+    total_trade_count: int
+    median_fold_net_pnl: Decimal
+    median_fold_max_drawdown: Decimal
+    symbol_net_pnl: tuple[tuple[str, Decimal], ...]
+    symbol_trade_counts: tuple[tuple[str, int], ...]
+    side_net_pnl: tuple[tuple[str, Decimal], ...]
+    side_trade_counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PromotionCriterion:
+    name: str
+    passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PromotionDecision:
+    candidate: StrategyIdentity
+    aggregate: AggregatePerformance
+    passed: bool
+    criteria: tuple[PromotionCriterion, ...]
+    failure_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionDecision:
+    selected: StrategyIdentity | None
+    conclusion: str
+
+
+V2A_WALK_FORWARD_PASSED = "V2A_WALK_FORWARD_PASSED"
+V2A_WALK_FORWARD_FAILED = "V2A_WALK_FORWARD_FAILED"
+
+
+def _decimal_median(values: tuple[Decimal, ...]) -> Decimal:
+    if not values:
+        raise ValueError("median requires values")
+    ordered = tuple(sorted(values))
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / Decimal("2")
+
+
+def _sum_breakdown(
+    fold_results: tuple[FoldPerformance, ...],
+    value_field: str,
+    count_field: str,
+    required_keys: tuple[str, str],
+) -> tuple[tuple[tuple[str, Decimal], ...], tuple[tuple[str, int], ...]]:
+    values = {key: Decimal("0") for key in required_keys}
+    counts = {key: 0 for key in required_keys}
+    for fold in fold_results:
+        fold_values = dict(getattr(fold, value_field))
+        fold_counts = dict(getattr(fold, count_field))
+        if set(fold_values) != set(required_keys) or set(fold_counts) != set(required_keys):
+            raise ValueError("Fold performance breakdown keys are incomplete")
+        for key in required_keys:
+            values[key] += fold_values[key]
+            counts[key] += fold_counts[key]
+    return tuple(values.items()), tuple(counts.items())
+
+
+def aggregate_fold_performance(
+    fold_results: tuple[FoldPerformance, ...], *, initial_capital_per_fold: Decimal
+) -> AggregatePerformance:
+    if initial_capital_per_fold != Decimal("10000"):
+        raise ValueError("each Fold must independently start with 10000 USDT")
+    if tuple(item.fold_id for item in fold_results) != ("F1", "F2", "F3", "F4"):
+        raise ValueError("aggregation requires exactly F1, F2, F3 and F4")
+    total_net_pnl = sum((item.net_pnl for item in fold_results), Decimal("0"))
+    total_gross_profit = sum((item.gross_profit for item in fold_results), Decimal("0"))
+    total_gross_loss = sum((item.gross_loss for item in fold_results), Decimal("0"))
+    symbol_values, symbol_counts = _sum_breakdown(
+        fold_results,
+        "symbol_net_pnl",
+        "symbol_trade_counts",
+        ("BTCUSDT", "ETHUSDT"),
+    )
+    side_values, side_counts = _sum_breakdown(
+        fold_results,
+        "side_net_pnl",
+        "side_trade_counts",
+        ("LONG", "SHORT"),
+    )
+    return AggregatePerformance(
+        fold_results=fold_results,
+        total_net_pnl=total_net_pnl,
+        aggregate_return=total_net_pnl / Decimal("40000"),
+        total_gross_profit=total_gross_profit,
+        total_gross_loss=total_gross_loss,
+        aggregate_profit_factor=(
+            total_gross_profit / abs(total_gross_loss) if total_gross_loss else None
+        ),
+        total_trade_count=sum(item.trade_count for item in fold_results),
+        median_fold_net_pnl=_decimal_median(tuple(item.net_pnl for item in fold_results)),
+        median_fold_max_drawdown=_decimal_median(tuple(item.max_drawdown for item in fold_results)),
+        symbol_net_pnl=symbol_values,
+        symbol_trade_counts=symbol_counts,
+        side_net_pnl=side_values,
+        side_trade_counts=side_counts,
+    )
+
+
+def _profit_concentration_passes(aggregate: AggregatePerformance) -> bool:
+    positives = tuple(item.net_pnl for item in aggregate.fold_results if item.net_pnl > 0)
+    return bool(positives) and max(positives) <= sum(positives) * Decimal("0.60")
+
+
+def _diversification_passes(
+    values: tuple[tuple[str, Decimal], ...],
+    counts: tuple[tuple[str, int], ...],
+) -> bool:
+    return all(value > 0 for _, value in values) and all(count > 0 for _, count in counts)
+
+
+def evaluate_promotion(
+    *,
+    candidate: StrategyIdentity,
+    aggregate: AggregatePerformance,
+    baseline: AggregatePerformance,
+) -> PromotionDecision:
+    if candidate not in {StrategyIdentity.V2A_Q50, StrategyIdentity.V2A_Q67}:
+        raise ValueError("only V2-A candidates may be evaluated for promotion")
+    candidate_by_fold = {item.fold_id: item for item in aggregate.fold_results}
+    baseline_by_fold = {item.fold_id: item for item in baseline.fold_results}
+    if candidate_by_fold.keys() != baseline_by_fold.keys():
+        raise ValueError("candidate and baseline Fold identities differ")
+    pf_passes = (
+        aggregate.aggregate_profit_factor is not None
+        and aggregate.aggregate_profit_factor >= Decimal("1.10")
+    ) or (
+        aggregate.aggregate_profit_factor is None
+        and aggregate.total_gross_profit > 0
+        and aggregate.total_gross_loss == 0
+    )
+    criteria = (
+        PromotionCriterion(
+            "POSITIVE_FOLD_COUNT",
+            sum(item.net_pnl > 0 for item in aggregate.fold_results) >= 3,
+        ),
+        PromotionCriterion(
+            "OUTPERFORM_BASELINE_FOLD_COUNT",
+            sum(
+                candidate_by_fold[key].net_pnl > baseline_by_fold[key].net_pnl
+                for key in candidate_by_fold
+            )
+            >= 3,
+        ),
+        PromotionCriterion("TOTAL_NET_PNL", aggregate.total_net_pnl > 0),
+        PromotionCriterion("PROFIT_FACTOR", pf_passes),
+        PromotionCriterion("TOTAL_TRADE_COUNT", aggregate.total_trade_count >= 60),
+        PromotionCriterion(
+            "MIN_FOLD_TRADE_COUNT",
+            all(item.trade_count >= 10 for item in aggregate.fold_results),
+        ),
+        PromotionCriterion("MEDIAN_FOLD_NET_PNL", aggregate.median_fold_net_pnl > 0),
+        PromotionCriterion(
+            "MEDIAN_DRAWDOWN",
+            aggregate.median_fold_max_drawdown <= baseline.median_fold_max_drawdown,
+        ),
+        PromotionCriterion("FOLD_PROFIT_CONCENTRATION", _profit_concentration_passes(aggregate)),
+        PromotionCriterion(
+            "SYMBOL_DIVERSIFICATION",
+            _diversification_passes(aggregate.symbol_net_pnl, aggregate.symbol_trade_counts),
+        ),
+        PromotionCriterion(
+            "SIDE_DIVERSIFICATION",
+            _diversification_passes(aggregate.side_net_pnl, aggregate.side_trade_counts),
+        ),
+        PromotionCriterion(
+            "COMPLETE_VALID_PATHS",
+            all(
+                item.reached_fold_end and not item.halted and not item.data_invalid
+                for item in aggregate.fold_results
+            ),
+        ),
+        PromotionCriterion(
+            "INVARIANTS",
+            all(not item.invariant_failures for item in aggregate.fold_results),
+        ),
+    )
+    failures = tuple(item.name for item in criteria if not item.passed)
+    return PromotionDecision(
+        candidate=candidate,
+        aggregate=aggregate,
+        passed=not failures,
+        criteria=criteria,
+        failure_reasons=failures,
+    )
+
+
+def select_walk_forward_candidate(
+    *, q50: PromotionDecision, q67: PromotionDecision
+) -> SelectionDecision:
+    if q50.candidate is not StrategyIdentity.V2A_Q50:
+        raise ValueError("q50 decision identity mismatch")
+    if q67.candidate is not StrategyIdentity.V2A_Q67:
+        raise ValueError("q67 decision identity mismatch")
+    if not q50.passed and not q67.passed:
+        return SelectionDecision(None, V2A_WALK_FORWARD_FAILED)
+    if q50.passed and not q67.passed:
+        return SelectionDecision(StrategyIdentity.V2A_Q50, V2A_WALK_FORWARD_PASSED)
+    if q67.passed and not q50.passed:
+        return SelectionDecision(StrategyIdentity.V2A_Q67, V2A_WALK_FORWARD_PASSED)
+    q50_pf = q50.aggregate.aggregate_profit_factor
+    q67_pf = q67.aggregate.aggregate_profit_factor
+    q67_is_strictly_superior = (
+        q50_pf is not None
+        and q67_pf is not None
+        and q67_pf >= q50_pf + Decimal("0.10")
+        and q67.aggregate.total_net_pnl >= q50.aggregate.total_net_pnl * Decimal("1.25")
+        and q67.aggregate.total_trade_count >= 60
+        and sum(item.net_pnl > 0 for item in q67.aggregate.fold_results)
+        >= sum(item.net_pnl > 0 for item in q50.aggregate.fold_results)
+        and q67.aggregate.median_fold_max_drawdown <= q50.aggregate.median_fold_max_drawdown
+    )
+    selected = StrategyIdentity.V2A_Q67 if q67_is_strictly_superior else StrategyIdentity.V2A_Q50
+    return SelectionDecision(selected, V2A_WALK_FORWARD_PASSED)
+
+
 def _strategy_result(
     fold: FoldPreflightResult,
     strategy: StrategyIdentity,
