@@ -22,6 +22,9 @@ from pa_agent.research_backtest.domain.canonical import canonical_sha256
 from pa_agent.research_backtest.indicators.atr import wilder_atr
 from pa_agent.research_backtest.indicators.ema import ema
 from pa_agent.research_backtest.indicators.numeric import float64_to_decimal_15sig
+from pa_agent.research_backtest.strategy.breakout_strength import (
+    calculate_breakout_strength,
+)
 
 ATTRIBUTION_VERSION = "V1_FAILURE_ATTRIBUTION_V1"
 POST_HOC = "POST_HOC_DIAGNOSTIC_ONLY"
@@ -411,7 +414,13 @@ def _candidate_features(
                 breakout_distance = candidate.donchian_low_previous_20 - candidate.decision_close
             trend_strength = abs(candidate.ema50_daily - candidate.ema200_daily) / daily_atr_value
             atr_percent = candidate.atr14_4h / candidate.decision_close
-            breakout_strength = breakout_distance / candidate.atr14_4h
+            breakout_strength = calculate_breakout_strength(
+                market_view=candidate.market_view,
+                decision_close=candidate.decision_close,
+                prior_20_bar_donchian_upper=candidate.donchian_high_previous_20,
+                prior_20_bar_donchian_lower=candidate.donchian_low_previous_20,
+                decision_atr_4h=candidate.atr14_4h,
+            )
             result[candidate.candidate_id] = {
                 "daily_close": str(candidate.daily_close),
                 "EMA50": str(candidate.ema50_daily),
