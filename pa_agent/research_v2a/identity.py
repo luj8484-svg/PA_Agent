@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
@@ -16,8 +18,58 @@ THRESHOLD_MANIFEST_SCHEMA_VERSION = "V2A_THRESHOLD_MANIFEST_V1"
 EXPERIMENT_IDENTITY_SCHEMA_VERSION = "V2A_EXPERIMENT_IDENTITY_V1"
 THRESHOLD_CALCULATION_VERSION = "V2A_NEAREST_RANK_GLOBAL_Q50_Q67_V1"
 BREAKOUT_STRENGTH_VERSION = "BREAKOUT_STRENGTH_DECIMAL_V1"
+APPROVED_ECONOMIC_BASELINE = "3a5583598122236904c5a0919f8eb5740b6d6c54"
+EXPERIMENT_CODE_IDENTITY_INVALID = "EXPERIMENT_CODE_IDENTITY_INVALID"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{7,64}")
+_FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+def _git(
+    repository_root: Path, *arguments: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ("git", *arguments),
+        cwd=repository_root,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def verify_experiment_code_identity(
+    *,
+    repository_root: Path,
+    code_commit: str,
+    approved_economic_baseline: str = APPROVED_ECONOMIC_BASELINE,
+) -> str:
+    def invalid(reason: str) -> ValueError:
+        return ValueError(f"{EXPERIMENT_CODE_IDENTITY_INVALID}:{reason}")
+
+    if _FULL_COMMIT.fullmatch(code_commit) is None:
+        raise invalid("CODE_COMMIT_NOT_FULL_SHA")
+    if _FULL_COMMIT.fullmatch(approved_economic_baseline) is None:
+        raise invalid("APPROVED_BASELINE_NOT_FULL_SHA")
+    try:
+        head = _git(repository_root, "rev-parse", "HEAD").stdout.strip()
+        status = _git(repository_root, "status", "--porcelain").stdout
+        ancestry = _git(
+            repository_root,
+            "merge-base",
+            "--is-ancestor",
+            approved_economic_baseline,
+            head,
+            check=False,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise invalid("GIT_IDENTITY_UNAVAILABLE") from exc
+    if head != code_commit:
+        raise invalid("CODE_COMMIT_NOT_HEAD")
+    if status:
+        raise invalid("WORKTREE_NOT_CLEAN")
+    if ancestry.returncode != 0:
+        raise invalid("APPROVED_BASELINE_NOT_ANCESTOR")
+    return head
 
 
 @dataclass(frozen=True, slots=True)

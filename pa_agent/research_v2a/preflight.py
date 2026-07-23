@@ -55,6 +55,7 @@ class FoldPreflightResult:
     training_candidate_content_hash: str
     threshold_manifest_hash: str
     validation_candidate_count: int
+    validation_candidate_content_hash: str
     baseline: CandidatePreflightStrategyResult
     q50: CandidatePreflightStrategyResult
     q67: CandidatePreflightStrategyResult
@@ -87,7 +88,14 @@ class CandidatePreflightReport:
 class CandidatePreflightBundle:
     report: CandidatePreflightReport
     experiment_identity: ExperimentIdentity
-    strategy_candidates: tuple[StrategyCandidate, ...]
+    fold_candidate_inputs: tuple[FoldCandidateInputs, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FoldCandidateInputs:
+    fold_id: str
+    training_candidates: tuple[StrategyCandidate, ...]
+    validation_candidates: tuple[StrategyCandidate, ...]
 
 
 def _ordered(
@@ -159,7 +167,8 @@ def _elimination_reasons(
 def _fold_result(
     *,
     fold: WalkForwardFold,
-    candidates: tuple[StrategyCandidate, ...],
+    training_candidates: tuple[StrategyCandidate, ...],
+    validation_candidates: tuple[StrategyCandidate, ...],
     dataset_content_hash: str,
     code_commit: str,
     dependency_lock_hash: str,
@@ -169,18 +178,22 @@ def _fold_result(
     CandidatePreflightStrategyResult,
     CandidatePreflightStrategyResult,
 ]:
-    training = tuple(
-        candidate
-        for candidate in candidates
-        if fold.training_start_utc_ms <= candidate.decision_time_utc_ms <= fold.training_end_utc_ms
-    )
-    validation = tuple(
-        candidate
-        for candidate in candidates
-        if fold.validation_start_utc_ms
+    training = _ordered(training_candidates)
+    validation = _ordered(validation_candidates)
+    if not training or not validation:
+        raise ValueError(f"{fold.fold_id}: Training and Validation Candidates must be nonempty")
+    if any(
+        not fold.training_start_utc_ms <= candidate.decision_time_utc_ms <= fold.training_end_utc_ms
+        for candidate in training
+    ):
+        raise ValueError(f"{fold.fold_id}: Candidate is outside Fold Training")
+    if any(
+        not fold.validation_start_utc_ms
         <= candidate.decision_time_utc_ms
         <= fold.validation_end_utc_ms
-    )
+        for candidate in validation
+    ):
+        raise ValueError(f"{fold.fold_id}: Candidate is outside Fold Validation")
     manifest = build_threshold_manifest(
         fold=fold,
         training_candidates=training,
@@ -211,6 +224,7 @@ def _fold_result(
             training_candidate_content_hash=manifest.training_candidate_content_hash,
             threshold_manifest_hash=manifest.content_hash,
             validation_candidate_count=len(validation),
+            validation_candidate_content_hash=canonical_sha256(validation),
             baseline=baseline,
             q50=q50,
             q67=q67,
@@ -218,6 +232,73 @@ def _fold_result(
         manifest,
         q50,
         q67,
+    )
+
+
+def run_fold_candidate_preflight(
+    *,
+    folds: tuple[WalkForwardFold, ...],
+    fold_candidate_inputs: tuple[FoldCandidateInputs, ...],
+    dataset_content_hash: str,
+    code_commit: str,
+    dependency_lock_hash: str,
+) -> CandidatePreflightReport:
+    if tuple(fold.fold_id for fold in folds) != ("F1", "F2", "F3", "F4"):
+        raise ValueError("Preflight requires the four frozen Walk-forward Folds")
+    if tuple(item.fold_id for item in fold_candidate_inputs) != ("F1", "F2", "F3", "F4"):
+        raise ValueError("Fold Candidate inputs must be ordered F1 through F4")
+    if _SHA256.fullmatch(dataset_content_hash) is None:
+        raise ValueError("dataset_content_hash must be a lowercase SHA-256")
+    if _SHA256.fullmatch(dependency_lock_hash) is None:
+        raise ValueError("dependency_lock_hash must be a lowercase SHA-256")
+    if _COMMIT.fullmatch(code_commit) is None:
+        raise ValueError("code_commit must be a hexadecimal commit identity")
+
+    built = tuple(
+        _fold_result(
+            fold=fold,
+            training_candidates=inputs.training_candidates,
+            validation_candidates=inputs.validation_candidates,
+            dataset_content_hash=dataset_content_hash,
+            code_commit=code_commit,
+            dependency_lock_hash=dependency_lock_hash,
+        )
+        for fold, inputs in zip(folds, fold_candidate_inputs, strict=True)
+    )
+    fold_results = tuple(item[0] for item in built)
+    q50_results = tuple(item[2] for item in built)
+    q67_results = tuple(item[3] for item in built)
+    q50_reasons = _elimination_reasons(StrategyIdentity.V2A_Q50, q50_results)
+    q67_reasons = _elimination_reasons(StrategyIdentity.V2A_Q67, q67_results)
+    surviving = tuple(
+        strategy
+        for strategy, reasons in (
+            (StrategyIdentity.V2A_Q50, q50_reasons),
+            (StrategyIdentity.V2A_Q67, q67_reasons),
+        )
+        if not reasons
+    )
+    eligible = (StrategyIdentity.V1_BASELINE, *surviving) if surviving else ()
+    diagnostic_candidates = _ordered(
+        tuple(
+            candidate
+            for inputs in fold_candidate_inputs
+            for candidate in (*inputs.training_candidates, *inputs.validation_candidates)
+        )
+    )
+    return CandidatePreflightReport(
+        schema_version=PREFLIGHT_SCHEMA_VERSION,
+        status=PREFLIGHT_PASSED if surviving else PREFLIGHT_FAILED,
+        dataset_content_hash=dataset_content_hash,
+        candidate_content_hash=canonical_sha256(diagnostic_candidates),
+        candidate_count=len(diagnostic_candidates),
+        candidate_filter_version=CANDIDATE_FILTER_VERSION,
+        code_commit=code_commit,
+        dependency_lock_hash=dependency_lock_hash,
+        fold_results=fold_results,
+        eligible_strategies=eligible,
+        eligible_task_count=4 * len(eligible),
+        elimination_reasons=(*q50_reasons, *q67_reasons),
     )
 
 
@@ -247,68 +328,95 @@ def run_candidate_preflight(
     ):
         raise ValueError("Candidate is outside V2-A development boundary")
 
-    built = tuple(
-        _fold_result(
-            fold=fold,
-            candidates=candidates,
-            dataset_content_hash=dataset_content_hash,
-            code_commit=code_commit,
-            dependency_lock_hash=dependency_lock_hash,
+    fold_inputs = tuple(
+        FoldCandidateInputs(
+            fold.fold_id,
+            tuple(
+                candidate
+                for candidate in candidates
+                if fold.training_start_utc_ms
+                <= candidate.decision_time_utc_ms
+                <= fold.training_end_utc_ms
+            ),
+            tuple(
+                candidate
+                for candidate in candidates
+                if fold.validation_start_utc_ms
+                <= candidate.decision_time_utc_ms
+                <= fold.validation_end_utc_ms
+            ),
         )
         for fold in folds
     )
-    fold_results = tuple(item[0] for item in built)
-    q50_results = tuple(item[2] for item in built)
-    q67_results = tuple(item[3] for item in built)
-    q50_reasons = _elimination_reasons(StrategyIdentity.V2A_Q50, q50_results)
-    q67_reasons = _elimination_reasons(StrategyIdentity.V2A_Q67, q67_results)
-    surviving = tuple(
-        strategy
-        for strategy, reasons in (
-            (StrategyIdentity.V2A_Q50, q50_reasons),
-            (StrategyIdentity.V2A_Q67, q67_reasons),
-        )
-        if not reasons
-    )
-    eligible = (StrategyIdentity.V1_BASELINE, *surviving) if surviving else ()
-    task_count = 4 * len(eligible)
-    return CandidatePreflightReport(
-        schema_version=PREFLIGHT_SCHEMA_VERSION,
-        status=PREFLIGHT_PASSED if surviving else PREFLIGHT_FAILED,
+    return run_fold_candidate_preflight(
+        folds=folds,
+        fold_candidate_inputs=fold_inputs,
         dataset_content_hash=dataset_content_hash,
-        candidate_content_hash=canonical_sha256(candidates),
-        candidate_count=len(candidates),
-        candidate_filter_version=CANDIDATE_FILTER_VERSION,
         code_commit=code_commit,
         dependency_lock_hash=dependency_lock_hash,
-        fold_results=fold_results,
-        eligible_strategies=eligible,
-        eligible_task_count=task_count,
-        elimination_reasons=(*q50_reasons, *q67_reasons),
     )
+
+
+def _source_split_name(fold_id: str) -> str:
+    return "TRAINING" if fold_id in {"F1", "F2"} else "VALIDATION"
+
+
+def load_fold_candidate_inputs(
+    *,
+    root: Path,
+    folds: tuple[WalkForwardFold, ...],
+    code_commit: str,
+    dependency_lock_hash: str,
+) -> tuple[FoldCandidateInputs, ...]:
+    inputs = []
+    for fold in folds:
+        training, _, _, _ = _load_candidates(
+            root,
+            Split(
+                _source_split_name(fold.fold_id),
+                fold.training_start_utc_ms,
+                fold.training_end_utc_ms,
+            ),
+            "NATIVE_PRIMARY",
+            fold.training_start_utc_ms,
+            code_commit,
+            dependency_lock_hash,
+        )
+        validation, _, _, _ = _load_candidates(
+            root,
+            Split(
+                _source_split_name(fold.fold_id),
+                fold.validation_start_utc_ms,
+                fold.validation_end_utc_ms,
+            ),
+            "NATIVE_PRIMARY",
+            fold.training_start_utc_ms,
+            code_commit,
+            dependency_lock_hash,
+        )
+        inputs.append(
+            FoldCandidateInputs(
+                fold.fold_id,
+                tuple(training),
+                tuple(validation),
+            )
+        )
+    return tuple(inputs)
 
 
 def prepare_candidate_preflight(*, root: Path, code_commit: str) -> CandidatePreflightBundle:
     approval = verify_data_approval_manifest(root / "data_approval_manifest_v1.json")
     dataset_content_hash = approval.manifest["hybrid_historical_data_bundle_hash"]
     dependency_lock_hash = approval.manifest["dependency_lock_hash"]
-    development = Split(
-        "V2A_DEVELOPMENT",
-        WALK_FORWARD_FOLDS[0].training_start_utc_ms,
-        WALK_FORWARD_FOLDS[-1].validation_end_utc_ms,
-    )
-    candidates, _, _, _ = _load_candidates(
-        root,
-        development,
-        "NATIVE_PRIMARY",
-        WALK_FORWARD_FOLDS[0].training_start_utc_ms,
-        code_commit,
-        dependency_lock_hash,
-    )
-    typed_candidates = tuple(candidates)
-    report = run_candidate_preflight(
+    fold_inputs = load_fold_candidate_inputs(
+        root=root,
         folds=WALK_FORWARD_FOLDS,
-        strategy_candidates=typed_candidates,
+        code_commit=code_commit,
+        dependency_lock_hash=dependency_lock_hash,
+    )
+    report = run_fold_candidate_preflight(
+        folds=WALK_FORWARD_FOLDS,
+        fold_candidate_inputs=fold_inputs,
         dataset_content_hash=dataset_content_hash,
         code_commit=code_commit,
         dependency_lock_hash=dependency_lock_hash,
@@ -316,19 +424,13 @@ def prepare_candidate_preflight(*, root: Path, code_commit: str) -> CandidatePre
     manifests = tuple(
         build_threshold_manifest(
             fold=fold,
-            training_candidates=tuple(
-                candidate
-                for candidate in typed_candidates
-                if fold.training_start_utc_ms
-                <= candidate.decision_time_utc_ms
-                <= fold.training_end_utc_ms
-            ),
+            training_candidates=inputs.training_candidates,
             dataset_content_hash=dataset_content_hash,
             candidate_filter_version=CANDIDATE_FILTER_VERSION,
             code_commit=code_commit,
             dependency_lock_hash=dependency_lock_hash,
         )
-        for fold in WALK_FORWARD_FOLDS
+        for fold, inputs in zip(WALK_FORWARD_FOLDS, fold_inputs, strict=True)
     )
     identity = build_experiment_identity(
         strategy_identities=(
@@ -343,4 +445,4 @@ def prepare_candidate_preflight(*, root: Path, code_commit: str) -> CandidatePre
         dependency_lock_hash=dependency_lock_hash,
         candidate_filter_version=CANDIDATE_FILTER_VERSION,
     )
-    return CandidatePreflightBundle(report, identity, typed_candidates)
+    return CandidatePreflightBundle(report, identity, fold_inputs)

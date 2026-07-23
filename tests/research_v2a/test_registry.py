@@ -40,6 +40,7 @@ def _preflight(
             training_candidate_content_hash="b" * 64,
             threshold_manifest_hash="c" * 64,
             validation_candidate_count=20,
+            validation_candidate_content_hash="d" * 64,
             baseline=_strategy_result(fold.fold_id, StrategyIdentity.V1_BASELINE),
             q50=_strategy_result(fold.fold_id, StrategyIdentity.V2A_Q50),
             q67=_strategy_result(fold.fold_id, StrategyIdentity.V2A_Q67),

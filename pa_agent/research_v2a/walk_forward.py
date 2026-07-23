@@ -25,13 +25,17 @@ from pa_agent.research_2d.runner import (
     _run_scenario,
 )
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
+from pa_agent.research_backtest.domain.rejections import ExecutionRejection
 from pa_agent.research_backtest.simulation.domain import PathState
 from pa_agent.research_v2a.domain import (
     WALK_FORWARD_FOLDS,
     StrategyIdentity,
     WalkForwardFold,
 )
-from pa_agent.research_v2a.identity import ExperimentIdentity
+from pa_agent.research_v2a.identity import (
+    ExperimentIdentity,
+    verify_experiment_code_identity,
+)
 from pa_agent.research_v2a.preflight import (
     PREFLIGHT_FAILED,
     CandidatePreflightReport,
@@ -153,6 +157,8 @@ class PromotionDecision:
     passed: bool
     criteria: tuple[PromotionCriterion, ...]
     failure_reasons: tuple[str, ...]
+    baseline_path_decision: PromotionDecision | None = None
+    conservative_path_decision: PromotionDecision | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +329,69 @@ def evaluate_promotion(
     )
 
 
+def evaluate_dual_path_promotion(
+    *,
+    candidate: StrategyIdentity,
+    baseline_path_aggregate: AggregatePerformance,
+    conservative_path_aggregate: AggregatePerformance,
+    baseline_reference_by_path: tuple[AggregatePerformance, AggregatePerformance],
+) -> PromotionDecision:
+    baseline_reference, conservative_reference = baseline_reference_by_path
+    baseline_decision = evaluate_promotion(
+        candidate=candidate,
+        aggregate=baseline_path_aggregate,
+        baseline=baseline_reference,
+    )
+    conservative_decision = evaluate_promotion(
+        candidate=candidate,
+        aggregate=conservative_path_aggregate,
+        baseline=conservative_reference,
+    )
+    failures = (
+        *(f"BASELINE:{reason}" for reason in baseline_decision.failure_reasons),
+        *(f"CONSERVATIVE:{reason}" for reason in conservative_decision.failure_reasons),
+    )
+    criteria = (
+        *(
+            PromotionCriterion(f"BASELINE:{item.name}", item.passed)
+            for item in baseline_decision.criteria
+        ),
+        *(
+            PromotionCriterion(f"CONSERVATIVE:{item.name}", item.passed)
+            for item in conservative_decision.criteria
+        ),
+    )
+    return PromotionDecision(
+        candidate=candidate,
+        aggregate=conservative_path_aggregate,
+        passed=baseline_decision.passed and conservative_decision.passed,
+        criteria=criteria,
+        failure_reasons=failures,
+        baseline_path_decision=baseline_decision,
+        conservative_path_decision=conservative_decision,
+    )
+
+
+def _selection_positive_fold_count(decision: PromotionDecision) -> int:
+    aggregates = (
+        (decision.baseline_path_decision.aggregate, decision.conservative_path_decision.aggregate)
+        if decision.baseline_path_decision is not None
+        and decision.conservative_path_decision is not None
+        else (decision.aggregate,)
+    )
+    return min(sum(item.net_pnl > 0 for item in aggregate.fold_results) for aggregate in aggregates)
+
+
+def _selection_max_drawdown(decision: PromotionDecision) -> Decimal:
+    aggregates = (
+        (decision.baseline_path_decision.aggregate, decision.conservative_path_decision.aggregate)
+        if decision.baseline_path_decision is not None
+        and decision.conservative_path_decision is not None
+        else (decision.aggregate,)
+    )
+    return max(aggregate.median_fold_max_drawdown for aggregate in aggregates)
+
+
 def select_walk_forward_candidate(
     *, q50: PromotionDecision, q67: PromotionDecision
 ) -> SelectionDecision:
@@ -344,9 +413,8 @@ def select_walk_forward_candidate(
         and q67_pf >= q50_pf + Decimal("0.10")
         and q67.aggregate.total_net_pnl >= q50.aggregate.total_net_pnl * Decimal("1.25")
         and q67.aggregate.total_trade_count >= 60
-        and sum(item.net_pnl > 0 for item in q67.aggregate.fold_results)
-        >= sum(item.net_pnl > 0 for item in q50.aggregate.fold_results)
-        and q67.aggregate.median_fold_max_drawdown <= q50.aggregate.median_fold_max_drawdown
+        and _selection_positive_fold_count(q67) >= _selection_positive_fold_count(q50)
+        and _selection_max_drawdown(q67) <= _selection_max_drawdown(q50)
     )
     selected = StrategyIdentity.V2A_Q67 if q67_is_strictly_superior else StrategyIdentity.V2A_Q50
     return SelectionDecision(selected, V2A_WALK_FORWARD_PASSED)
@@ -571,6 +639,10 @@ def run_capacity_probe(
 
 
 def run_v2a_candidate_preflight(*, root: Path, output_root: Path, code_commit: str) -> Path:
+    verify_experiment_code_identity(
+        repository_root=Path(__file__).resolve().parents[2],
+        code_commit=code_commit,
+    )
     bundle = prepare_candidate_preflight(root=root, code_commit=code_commit)
     with exclusive_output_lock(output_root.parent):
         published = publish_walk_forward_report(
@@ -584,16 +656,51 @@ def run_v2a_candidate_preflight(*, root: Path, output_root: Path, code_commit: s
     return published.output_dir
 
 
-def _fold_performance(result: WalkForwardTaskResult) -> FoldPerformance:
+def _path_value(value: object) -> str:
+    return str(value.value) if hasattr(value, "value") else str(value)
+
+
+def validate_walk_forward_task_result(result: WalkForwardTaskResult) -> None:
     if len(result.runs) != 2 or len(result.metrics) != 2:
         raise ValueError(f"{result.key}: both ambiguity paths are required")
     run_by_path = {run.path_kind.value: run for run in result.runs}
     metric_by_path = {str(metric["path_kind"]): metric for metric in result.metrics}
-    if set(run_by_path) != {"BASELINE", "CONSERVATIVE"}:
+    required_paths = {"BASELINE", "CONSERVATIVE"}
+    if set(run_by_path) != required_paths or set(metric_by_path) != required_paths:
         raise ValueError(f"{result.key}: ambiguity path set is incomplete")
-    baseline = run_by_path["BASELINE"]
-    metric = metric_by_path["BASELINE"]
-    trades = tuple(baseline.trades)
+    for path_kind in ("BASELINE", "CONSERVATIVE"):
+        run = run_by_path[path_kind]
+        metric = metric_by_path[path_kind]
+        data_invalid = any(
+            isinstance(item, ExecutionRejection) and item.reason.value == "DATA_INVALID"
+            for item in run.planning_outputs
+        )
+        if data_invalid:
+            raise ValueError(f"{result.key}:{path_kind}:DATA_INVALID planning rejection")
+        state = _path_value(run.path_result.path_state)
+        if state != PathState.VALID.value:
+            raise ValueError(
+                f"{result.key}:{path_kind}:{state}:"
+                f"{run.path_result.invalid_reason or 'PATH_NOT_VALID'}"
+            )
+        if run.path_result.invalid_reason is not None:
+            raise ValueError(f"{result.key}:{path_kind}:INVALID_REASON_PRESENT")
+        expected_end = int(metric["split_end_utc_ms"]) + 1
+        if run.path_result.final_processed_time_utc_ms != expected_end:
+            raise ValueError(f"{result.key}:{path_kind}:SPLIT_NOT_COMPLETED")
+
+
+def _fold_performance(
+    result: WalkForwardTaskResult,
+    *,
+    path_kind: str,
+) -> FoldPerformance:
+    validate_walk_forward_task_result(result)
+    run_by_path = {run.path_kind.value: run for run in result.runs}
+    metric_by_path = {str(metric["path_kind"]): metric for metric in result.metrics}
+    selected = run_by_path[path_kind]
+    metric = metric_by_path[path_kind]
+    trades = tuple(selected.trades)
     symbol_pnl = Counter()
     symbol_counts = Counter()
     side_pnl = Counter()
@@ -603,14 +710,6 @@ def _fold_performance(result: WalkForwardTaskResult) -> FoldPerformance:
         symbol_counts[trade.symbol] += 1
         side_pnl[trade.side.value] += trade.net_pnl
         side_counts[trade.side.value] += 1
-    states = tuple(run.path_result.path_state for run in result.runs)
-    reasons = tuple(
-        str(run.path_result.invalid_reason) for run in result.runs if run.path_result.invalid_reason
-    )
-    expected_end = int(metric["split_end_utc_ms"]) + 1
-    reached_end = all(
-        run.path_result.final_processed_time_utc_ms == expected_end for run in result.runs
-    )
     return FoldPerformance(
         fold_id=result.fold_id,
         net_pnl=sum((trade.net_pnl for trade in trades), Decimal("0")),
@@ -624,23 +723,24 @@ def _fold_performance(result: WalkForwardTaskResult) -> FoldPerformance:
         ),
         side_net_pnl=tuple((side, side_pnl[side]) for side in ("LONG", "SHORT")),
         side_trade_counts=tuple((side, side_counts[side]) for side in ("LONG", "SHORT")),
-        reached_fold_end=reached_end,
-        halted=any(state is PathState.HALTED for state in states),
-        data_invalid=any("DATA_INVALID" in reason for reason in reasons),
-        invariant_failures=tuple(
-            reason
-            for reason in reasons
-            if "DATA_INVALID" not in reason and "MARK_GAP" not in reason
-        ),
+        reached_fold_end=True,
+        halted=False,
+        data_invalid=False,
+        invariant_failures=(),
     )
 
 
 def _aggregate_strategy_results(
     results: tuple[WalkForwardWorkerResult, ...],
     strategy: StrategyIdentity,
+    *,
+    path_kind: str,
 ) -> AggregatePerformance:
     by_fold = {
-        result.task_result.fold_id: _fold_performance(result.task_result)
+        result.task_result.fold_id: _fold_performance(
+            result.task_result,
+            path_kind=path_kind,
+        )
         for result in results
         if result.task_result.strategy_identity is strategy
     }
@@ -652,15 +752,8 @@ def _aggregate_strategy_results(
     )
 
 
-def _validate_worker_result(result: WalkForwardWorkerResult) -> None:
-    performance = _fold_performance(result.task_result)
-    if (
-        not performance.reached_fold_end
-        or performance.halted
-        or performance.data_invalid
-        or performance.invariant_failures
-    ):
-        raise ValueError(f"{result.key}: required Walk-forward path is not complete and valid")
+def validate_walk_forward_worker_result(result: WalkForwardWorkerResult) -> None:
+    validate_walk_forward_task_result(result.task_result)
 
 
 def _select_worker_count(*, requested: int, probe: CapacityProbeReport) -> int:
@@ -684,6 +777,10 @@ def run_v2a_walk_forward(
     hard_timeout_seconds: float = 21_600,
     no_progress_timeout_seconds: None = None,
 ) -> Path:
+    verify_experiment_code_identity(
+        repository_root=Path(__file__).resolve().parents[2],
+        code_commit=code_commit,
+    )
     if no_progress_timeout_seconds is not None:
         raise ValueError("V2-A no-progress watchdog is permanently disabled")
     if hard_timeout_seconds != 21_600:
@@ -729,26 +826,44 @@ def run_v2a_walk_forward(
             hard_timeout_seconds=hard_timeout_seconds,
             no_progress_timeout_seconds=None,
             worker=execute_walk_forward_task,
-            result_validator=_validate_worker_result,
+            result_validator=validate_walk_forward_worker_result,
         )
         results = tuple(batch.results)
-        baseline = _aggregate_strategy_results(results, StrategyIdentity.V1_BASELINE)
+        baseline_by_path = {
+            path_kind: _aggregate_strategy_results(
+                results,
+                StrategyIdentity.V1_BASELINE,
+                path_kind=path_kind,
+            )
+            for path_kind in ("BASELINE", "CONSERVATIVE")
+        }
         decisions = {}
         for strategy in bundle.report.eligible_strategies:
             if strategy is StrategyIdentity.V1_BASELINE:
                 continue
-            aggregate = _aggregate_strategy_results(results, strategy)
-            decisions[strategy] = evaluate_promotion(
+            candidate_by_path = {
+                path_kind: _aggregate_strategy_results(
+                    results,
+                    strategy,
+                    path_kind=path_kind,
+                )
+                for path_kind in ("BASELINE", "CONSERVATIVE")
+            }
+            decisions[strategy] = evaluate_dual_path_promotion(
                 candidate=strategy,
-                aggregate=aggregate,
-                baseline=baseline,
+                baseline_path_aggregate=candidate_by_path["BASELINE"],
+                conservative_path_aggregate=candidate_by_path["CONSERVATIVE"],
+                baseline_reference_by_path=(
+                    baseline_by_path["BASELINE"],
+                    baseline_by_path["CONSERVATIVE"],
+                ),
             )
         q50 = decisions.get(StrategyIdentity.V2A_Q50)
         q67 = decisions.get(StrategyIdentity.V2A_Q67)
         if q50 is None:
             q50 = PromotionDecision(
                 StrategyIdentity.V2A_Q50,
-                baseline,
+                baseline_by_path["CONSERVATIVE"],
                 False,
                 (),
                 ("PREFLIGHT_ELIMINATED",),
@@ -756,7 +871,7 @@ def run_v2a_walk_forward(
         if q67 is None:
             q67 = PromotionDecision(
                 StrategyIdentity.V2A_Q67,
-                baseline,
+                baseline_by_path["CONSERVATIVE"],
                 False,
                 (),
                 ("PREFLIGHT_ELIMINATED",),
@@ -767,7 +882,7 @@ def run_v2a_walk_forward(
             canonical_economics={
                 "experiment_identity": bundle.experiment_identity,
                 "preflight_hash": bundle.report.content_hash,
-                "baseline": baseline,
+                "baseline_by_path": baseline_by_path,
                 "promotion_decisions": tuple(decisions.values()),
                 "selection": selection,
             },
