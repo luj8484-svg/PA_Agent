@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -25,12 +26,18 @@ from pa_agent.research_2d.runner import (
     _run_scenario,
 )
 from pa_agent.research_backtest.domain.canonical import canonical_sha256
+from pa_agent.research_backtest.domain.config import execution_time_config
 from pa_agent.research_backtest.domain.rejections import ExecutionRejection
 from pa_agent.research_backtest.simulation.domain import PathState
+from pa_agent.research_backtest.versions import MAX_HOLD_VERSION
 from pa_agent.research_v2a.domain import (
     WALK_FORWARD_FOLDS,
     StrategyIdentity,
     WalkForwardFold,
+)
+from pa_agent.research_v2a.execution_horizon import (
+    EXECUTION_HORIZON_GATE_VERSION,
+    FROZEN_MAXIMUM_HOLDING_MINUTES,
 )
 from pa_agent.research_v2a.identity import (
     ExperimentIdentity,
@@ -38,12 +45,15 @@ from pa_agent.research_v2a.identity import (
 )
 from pa_agent.research_v2a.preflight import (
     PREFLIGHT_FAILED,
+    PREFLIGHT_SCHEMA_VERSION,
     CandidatePreflightReport,
     CandidatePreflightStrategyResult,
     FoldPreflightResult,
     prepare_candidate_preflight,
 )
 from pa_agent.research_v2a.reporting import publish_walk_forward_report
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +443,56 @@ def _strategy_result(
     raise ValueError("unsupported strategy identity")
 
 
+def _validate_preflight_horizon_contract(preflight: CandidatePreflightReport) -> None:
+    if preflight.schema_version != PREFLIGHT_SCHEMA_VERSION:
+        raise ValueError("Preflight schema does not include the frozen Execution Horizon Gate")
+    frozen_config_hash = execution_time_config(
+        entry_delay_minutes=1,
+        exit_delay_minutes=1,
+    ).config_content_hash
+    if (
+        preflight.execution_horizon_gate_version != EXECUTION_HORIZON_GATE_VERSION
+        or preflight.execution_time_config_content_hash != frozen_config_hash
+        or preflight.maximum_holding_minutes != FROZEN_MAXIMUM_HOLDING_MINUTES
+        or preflight.max_hold_version != MAX_HOLD_VERSION
+    ):
+        raise ValueError("Execution Horizon policy identity mismatch")
+    for fold in preflight.fold_results:
+        if _SHA256.fullmatch(fold.execution_horizon_decision_content_hash) is None:
+            raise ValueError("Execution Horizon decision hash is invalid")
+        rejected = fold.execution_horizon_rejected_candidate_ids
+        if (
+            fold.raw_validation_candidate_count
+            != fold.validation_candidate_count + fold.execution_horizon_rejected_count
+            or fold.execution_horizon_rejected_count != len(rejected)
+            or len(set(rejected)) != len(rejected)
+        ):
+            raise ValueError("Execution Horizon Candidate counts are inconsistent")
+        baseline_ids = fold.baseline.accepted_candidate_ids
+        if (
+            fold.baseline.validation_candidate_count != fold.validation_candidate_count
+            or fold.baseline.accepted_candidate_count != fold.validation_candidate_count
+            or fold.baseline.rejected_candidate_count != 0
+            or len(baseline_ids) != fold.baseline.accepted_candidate_count
+            or len(set(baseline_ids)) != len(baseline_ids)
+            or set(rejected).intersection(baseline_ids)
+        ):
+            raise ValueError("Execution Horizon baseline accepted set is inconsistent")
+        baseline_set = set(baseline_ids)
+        for strategy_result in (fold.q50, fold.q67):
+            accepted_ids = strategy_result.accepted_candidate_ids
+            if (
+                strategy_result.validation_candidate_count != fold.validation_candidate_count
+                or strategy_result.accepted_candidate_count != len(accepted_ids)
+                or strategy_result.rejected_candidate_count
+                != fold.validation_candidate_count - len(accepted_ids)
+                or len(set(accepted_ids)) != len(accepted_ids)
+                or not set(accepted_ids).issubset(baseline_set)
+                or set(rejected).intersection(accepted_ids)
+            ):
+                raise ValueError("Execution Horizon filtered accepted set is inconsistent")
+
+
 def build_walk_forward_tasks(
     *,
     preflight: CandidatePreflightReport,
@@ -443,6 +503,7 @@ def build_walk_forward_tasks(
         raise ValueError("Walk-forward only supports BASE_1X")
     if tuple(fold.fold_id for fold in folds) != ("F1", "F2", "F3", "F4"):
         raise ValueError("Walk-forward requires the four frozen Folds")
+    _validate_preflight_horizon_contract(preflight)
     if preflight.status == PREFLIGHT_FAILED:
         if preflight.eligible_strategies or preflight.eligible_task_count != 0:
             raise ValueError("failed Preflight cannot register tasks")

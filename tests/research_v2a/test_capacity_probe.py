@@ -19,7 +19,7 @@ from pa_agent.research_v2a.walk_forward import (
 
 def _identity() -> ExperimentIdentity:
     return ExperimentIdentity(
-        schema_version="V2A_EXPERIMENT_IDENTITY_V1",
+        schema_version="V2A_EXPERIMENT_IDENTITY_V2",
         strategy_identities=(StrategyIdentity.V1_BASELINE, StrategyIdentity.V2A_Q50),
         fold_manifest_hashes=("1" * 64,) * 4,
         threshold_manifest_hashes=("2" * 64,) * 4,
@@ -28,6 +28,11 @@ def _identity() -> ExperimentIdentity:
         code_commit="5" * 40,
         dependency_lock_hash="6" * 64,
         candidate_filter_version="BREAKOUT_QUALITY_FILTER_V2A_V1",
+        execution_horizon_gate_version="V2A_EXECUTION_HORIZON_GATE_V1",
+        execution_time_config_content_hash="8" * 64,
+        maximum_holding_minutes=2880,
+        max_hold_version="MAX_HOLD_V1_EXACT_48H",
+        execution_horizon_decision_hashes=("9" * 64,) * 4,
         computational_experiment_id="7" * 64,
     )
 

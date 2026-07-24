@@ -15,7 +15,7 @@ from pa_agent.research_v2a.domain import StrategyIdentity, WalkForwardFold
 from pa_agent.research_v2a.thresholds import nearest_rank_threshold
 
 THRESHOLD_MANIFEST_SCHEMA_VERSION = "V2A_THRESHOLD_MANIFEST_V1"
-EXPERIMENT_IDENTITY_SCHEMA_VERSION = "V2A_EXPERIMENT_IDENTITY_V1"
+EXPERIMENT_IDENTITY_SCHEMA_VERSION = "V2A_EXPERIMENT_IDENTITY_V2"
 THRESHOLD_CALCULATION_VERSION = "V2A_NEAREST_RANK_GLOBAL_Q50_Q67_V1"
 BREAKOUT_STRENGTH_VERSION = "BREAKOUT_STRENGTH_DECIMAL_V1"
 APPROVED_ECONOMIC_BASELINE = "3a5583598122236904c5a0919f8eb5740b6d6c54"
@@ -134,6 +134,11 @@ class ExperimentIdentity:
     code_commit: str
     dependency_lock_hash: str
     candidate_filter_version: str
+    execution_horizon_gate_version: str
+    execution_time_config_content_hash: str
+    maximum_holding_minutes: int
+    max_hold_version: str
+    execution_horizon_decision_hashes: tuple[str, ...]
     computational_experiment_id: str
 
     def canonical_json(self) -> str:
@@ -218,6 +223,11 @@ def build_experiment_identity(
     code_commit: str,
     dependency_lock_hash: str,
     candidate_filter_version: str,
+    execution_horizon_gate_version: str,
+    execution_time_config_content_hash: str,
+    maximum_holding_minutes: int,
+    max_hold_version: str,
+    execution_horizon_decision_hashes: tuple[str, ...],
 ) -> ExperimentIdentity:
     if not strategy_identities or StrategyIdentity.V1_BASELINE not in strategy_identities:
         raise ValueError("experiment identities must include V1_BASELINE")
@@ -225,6 +235,18 @@ def build_experiment_identity(
         raise ValueError("strategy identities must be unique")
     if any(_SHA256.fullmatch(value) is None for value in fold_manifest_hashes):
         raise ValueError("fold manifest hashes must be SHA-256 values")
+    if _SHA256.fullmatch(execution_time_config_content_hash) is None:
+        raise ValueError("execution_time_config_content_hash must be a SHA-256 value")
+    if not execution_horizon_decision_hashes or any(
+        _SHA256.fullmatch(value) is None for value in execution_horizon_decision_hashes
+    ):
+        raise ValueError("execution horizon decision hashes must be SHA-256 values")
+    if len(execution_horizon_decision_hashes) != len(fold_manifest_hashes):
+        raise ValueError("execution horizon decision hashes must match Fold count")
+    if type(maximum_holding_minutes) is not int or maximum_holding_minutes <= 0:
+        raise ValueError("maximum_holding_minutes must be a positive integer")
+    if not execution_horizon_gate_version or not max_hold_version:
+        raise ValueError("execution horizon versions must be nonempty")
     threshold_hashes = tuple(manifest.content_hash for manifest in threshold_manifests)
     calculation_hashes = tuple(
         manifest.threshold_calculation_hash for manifest in threshold_manifests
@@ -239,6 +261,11 @@ def build_experiment_identity(
         "code_commit": code_commit,
         "dependency_lock_hash": dependency_lock_hash,
         "candidate_filter_version": candidate_filter_version,
+        "execution_horizon_gate_version": execution_horizon_gate_version,
+        "execution_time_config_content_hash": execution_time_config_content_hash,
+        "maximum_holding_minutes": maximum_holding_minutes,
+        "max_hold_version": max_hold_version,
+        "execution_horizon_decision_hashes": execution_horizon_decision_hashes,
     }
     experiment_id = canonical_sha256(payload)
     return ExperimentIdentity(

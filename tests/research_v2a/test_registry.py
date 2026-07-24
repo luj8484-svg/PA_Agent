@@ -1,8 +1,11 @@
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 
 from pa_agent.research_2d.runner import Scenario
+from pa_agent.research_backtest.domain.config import execution_time_config
+from pa_agent.research_backtest.versions import MAX_HOLD_VERSION
 from pa_agent.research_v2a.domain import WALK_FORWARD_FOLDS, StrategyIdentity
 from pa_agent.research_v2a.preflight import (
     PREFLIGHT_FAILED,
@@ -39,6 +42,11 @@ def _preflight(
             training_candidate_count=20,
             training_candidate_content_hash="b" * 64,
             threshold_manifest_hash="c" * 64,
+            raw_validation_candidate_count=20,
+            raw_validation_candidate_content_hash="d" * 64,
+            execution_horizon_rejected_count=0,
+            execution_horizon_rejected_candidate_ids=(),
+            execution_horizon_decision_content_hash="9" * 64,
             validation_candidate_count=20,
             validation_candidate_content_hash="d" * 64,
             baseline=_strategy_result(fold.fold_id, StrategyIdentity.V1_BASELINE),
@@ -48,12 +56,19 @@ def _preflight(
         for fold in WALK_FORWARD_FOLDS
     )
     return CandidatePreflightReport(
-        schema_version="V2A_CANDIDATE_PREFLIGHT_V1",
+        schema_version="V2A_CANDIDATE_PREFLIGHT_V2",
         status=PREFLIGHT_PASSED if eligible else PREFLIGHT_FAILED,
         dataset_content_hash="d" * 64,
         candidate_content_hash="e" * 64,
         candidate_count=100,
         candidate_filter_version="BREAKOUT_QUALITY_FILTER_V2A_V1",
+        execution_horizon_gate_version="V2A_EXECUTION_HORIZON_GATE_V1",
+        execution_time_config_content_hash=execution_time_config(
+            entry_delay_minutes=1,
+            exit_delay_minutes=1,
+        ).config_content_hash,
+        maximum_holding_minutes=2880,
+        max_hold_version=MAX_HOLD_VERSION,
         code_commit="f" * 40,
         dependency_lock_hash="1" * 64,
         fold_results=folds,
@@ -110,4 +125,56 @@ def test_non_baseline_scenario_is_rejected() -> None:
             preflight=_preflight((StrategyIdentity.V1_BASELINE, StrategyIdentity.V2A_Q50)),
             folds=WALK_FORWARD_FOLDS,
             baseline_scenario=Scenario("COMBINED_2X", Decimal("2"), Decimal("2")),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda report: replace(report, schema_version="V2A_CANDIDATE_PREFLIGHT_V1"),
+        lambda report: replace(
+            report,
+            fold_results=(
+                replace(report.fold_results[0], raw_validation_candidate_count=21),
+                *report.fold_results[1:],
+            ),
+        ),
+        lambda report: replace(
+            report,
+            fold_results=(
+                replace(
+                    report.fold_results[0],
+                    execution_horizon_rejected_count=1,
+                    execution_horizon_rejected_candidate_ids=(
+                        report.fold_results[0].baseline.accepted_candidate_ids[0],
+                    ),
+                ),
+                *report.fold_results[1:],
+            ),
+        ),
+        lambda report: replace(
+            report,
+            fold_results=(
+                replace(
+                    report.fold_results[0],
+                    q50=replace(
+                        report.fold_results[0].q50,
+                        accepted_candidate_ids=("cand_outside00000000000000",),
+                        accepted_candidate_count=1,
+                        rejected_candidate_count=19,
+                    ),
+                ),
+                *report.fold_results[1:],
+            ),
+        ),
+    ],
+)
+def test_registry_fails_closed_on_stale_or_inconsistent_horizon_contract(mutate) -> None:
+    report = _preflight((StrategyIdentity.V1_BASELINE, StrategyIdentity.V2A_Q50))
+
+    with pytest.raises(ValueError, match=r"Execution Horizon|Preflight schema"):
+        build_walk_forward_tasks(
+            preflight=mutate(report),
+            folds=WALK_FORWARD_FOLDS,
+            baseline_scenario=BASE,
         )

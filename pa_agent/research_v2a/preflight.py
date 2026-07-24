@@ -10,6 +10,8 @@ from pa_agent.research_2d.approval import verify_data_approval_manifest
 from pa_agent.research_2d.runner import Split, _load_candidates
 from pa_agent.research_backtest.domain.candidates import StrategyCandidate
 from pa_agent.research_backtest.domain.canonical import canonical_dumps, canonical_sha256
+from pa_agent.research_backtest.domain.config import execution_time_config
+from pa_agent.research_backtest.versions import MAX_HOLD_VERSION
 from pa_agent.research_v2a.breakout_quality import (
     CANDIDATE_FILTER_VERSION,
     CandidateFilterOutcome,
@@ -20,6 +22,11 @@ from pa_agent.research_v2a.domain import (
     StrategyIdentity,
     WalkForwardFold,
 )
+from pa_agent.research_v2a.execution_horizon import (
+    EXECUTION_HORIZON_GATE_VERSION,
+    FROZEN_MAXIMUM_HOLDING_MINUTES,
+    apply_execution_horizon_gate,
+)
 from pa_agent.research_v2a.identity import (
     ExperimentIdentity,
     ThresholdManifest,
@@ -27,7 +34,7 @@ from pa_agent.research_v2a.identity import (
     build_threshold_manifest,
 )
 
-PREFLIGHT_SCHEMA_VERSION = "V2A_CANDIDATE_PREFLIGHT_V1"
+PREFLIGHT_SCHEMA_VERSION = "V2A_CANDIDATE_PREFLIGHT_V2"
 PREFLIGHT_PASSED = "PASS"
 PREFLIGHT_FAILED = "V2A_PREFLIGHT_FAILED"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -54,6 +61,11 @@ class FoldPreflightResult:
     training_candidate_count: int
     training_candidate_content_hash: str
     threshold_manifest_hash: str
+    raw_validation_candidate_count: int
+    raw_validation_candidate_content_hash: str
+    execution_horizon_rejected_count: int
+    execution_horizon_rejected_candidate_ids: tuple[str, ...]
+    execution_horizon_decision_content_hash: str
     validation_candidate_count: int
     validation_candidate_content_hash: str
     baseline: CandidatePreflightStrategyResult
@@ -69,6 +81,10 @@ class CandidatePreflightReport:
     candidate_content_hash: str
     candidate_count: int
     candidate_filter_version: str
+    execution_horizon_gate_version: str
+    execution_time_config_content_hash: str
+    maximum_holding_minutes: int
+    max_hold_version: str
     code_commit: str
     dependency_lock_hash: str
     fold_results: tuple[FoldPreflightResult, ...]
@@ -179,8 +195,8 @@ def _fold_result(
     CandidatePreflightStrategyResult,
 ]:
     training = _ordered(training_candidates)
-    validation = _ordered(validation_candidates)
-    if not training or not validation:
+    raw_validation = _ordered(validation_candidates)
+    if not training or not raw_validation:
         raise ValueError(f"{fold.fold_id}: Training and Validation Candidates must be nonempty")
     if any(
         not fold.training_start_utc_ms <= candidate.decision_time_utc_ms <= fold.training_end_utc_ms
@@ -191,9 +207,23 @@ def _fold_result(
         not fold.validation_start_utc_ms
         <= candidate.decision_time_utc_ms
         <= fold.validation_end_utc_ms
-        for candidate in validation
+        for candidate in raw_validation
     ):
         raise ValueError(f"{fold.fold_id}: Candidate is outside Fold Validation")
+    horizon = apply_execution_horizon_gate(
+        candidates=raw_validation,
+        execution_time_config=execution_time_config(
+            entry_delay_minutes=1,
+            exit_delay_minutes=1,
+        ),
+        maximum_holding_minutes=FROZEN_MAXIMUM_HOLDING_MINUTES,
+        split_end_exit_open_utc_ms=fold.validation_end_utc_ms + 1,
+    )
+    validation = horizon.accepted_candidates
+    if not validation:
+        raise ValueError(
+            f"{fold.fold_id}: Execution Horizon Gate removed all Validation Candidates"
+        )
     manifest = build_threshold_manifest(
         fold=fold,
         training_candidates=training,
@@ -223,6 +253,11 @@ def _fold_result(
             training_candidate_count=len(training),
             training_candidate_content_hash=manifest.training_candidate_content_hash,
             threshold_manifest_hash=manifest.content_hash,
+            raw_validation_candidate_count=len(raw_validation),
+            raw_validation_candidate_content_hash=canonical_sha256(raw_validation),
+            execution_horizon_rejected_count=len(horizon.rejected_candidate_ids),
+            execution_horizon_rejected_candidate_ids=horizon.rejected_candidate_ids,
+            execution_horizon_decision_content_hash=canonical_sha256(horizon.decisions),
             validation_candidate_count=len(validation),
             validation_candidate_content_hash=canonical_sha256(validation),
             baseline=baseline,
@@ -254,6 +289,10 @@ def run_fold_candidate_preflight(
     if _COMMIT.fullmatch(code_commit) is None:
         raise ValueError("code_commit must be a hexadecimal commit identity")
 
+    frozen_execution_time_config = execution_time_config(
+        entry_delay_minutes=1,
+        exit_delay_minutes=1,
+    )
     built = tuple(
         _fold_result(
             fold=fold,
@@ -293,6 +332,10 @@ def run_fold_candidate_preflight(
         candidate_content_hash=canonical_sha256(diagnostic_candidates),
         candidate_count=len(diagnostic_candidates),
         candidate_filter_version=CANDIDATE_FILTER_VERSION,
+        execution_horizon_gate_version=EXECUTION_HORIZON_GATE_VERSION,
+        execution_time_config_content_hash=(frozen_execution_time_config.config_content_hash),
+        maximum_holding_minutes=FROZEN_MAXIMUM_HOLDING_MINUTES,
+        max_hold_version=MAX_HOLD_VERSION,
         code_commit=code_commit,
         dependency_lock_hash=dependency_lock_hash,
         fold_results=fold_results,
@@ -444,5 +487,12 @@ def prepare_candidate_preflight(*, root: Path, code_commit: str) -> CandidatePre
         code_commit=code_commit,
         dependency_lock_hash=dependency_lock_hash,
         candidate_filter_version=CANDIDATE_FILTER_VERSION,
+        execution_horizon_gate_version=report.execution_horizon_gate_version,
+        execution_time_config_content_hash=(report.execution_time_config_content_hash),
+        maximum_holding_minutes=report.maximum_holding_minutes,
+        max_hold_version=report.max_hold_version,
+        execution_horizon_decision_hashes=tuple(
+            fold.execution_horizon_decision_content_hash for fold in report.fold_results
+        ),
     )
     return CandidatePreflightBundle(report, identity, fold_inputs)

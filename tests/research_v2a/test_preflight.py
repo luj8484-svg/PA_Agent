@@ -29,7 +29,9 @@ def _population(validation_strength: str = "4", *, first_validation_strength: st
             )
             candidates.append(
                 make_candidate(
-                    decision_time_utc_ms=fold.validation_start_utc_ms + index * 14_400_000,
+                    decision_time_utc_ms=(
+                        fold.validation_start_utc_ms + (index + 1) * 14_400_000 - 1
+                    ),
                     strength=fold_validation_strength,
                     symbol="BTCUSDT" if index % 2 == 0 else "ETHUSDT",
                     market_view=MarketView.LONG if index % 4 < 2 else MarketView.SHORT,
@@ -61,6 +63,9 @@ def test_preflight_reports_counts_thresholds_structure_and_twelve_task_eligibili
     )
     assert len(report.fold_results) == 4
     for result in report.fold_results:
+        assert result.raw_validation_candidate_count == 20
+        assert result.execution_horizon_rejected_count == 0
+        assert result.execution_horizon_rejected_candidate_ids == ()
         assert result.validation_candidate_count == 20
         assert result.q50.accepted_candidate_count == 20
         assert result.q67.accepted_candidate_count == 20
@@ -113,3 +118,25 @@ def test_q67_accepted_set_is_always_subset_of_q50() -> None:
 
     for fold in report.fold_results:
         assert set(fold.q67.accepted_candidate_ids) <= set(fold.q50.accepted_candidate_ids)
+
+
+def test_execution_horizon_gate_precedes_all_strategy_identity_filters() -> None:
+    fold = WALK_FORWARD_FOLDS[0]
+    late = make_candidate(
+        decision_time_utc_ms=fold.validation_end_utc_ms,
+        strength="10",
+        symbol="ETHUSDT",
+        suffix="f",
+    )
+
+    report = _run((*_population(), late))
+    result = report.fold_results[0]
+
+    assert result.raw_validation_candidate_count == 21
+    assert result.validation_candidate_count == 20
+    assert result.execution_horizon_rejected_count == 1
+    assert result.execution_horizon_rejected_candidate_ids == (late.candidate_id,)
+    assert late.candidate_id not in result.baseline.accepted_candidate_ids
+    assert late.candidate_id not in result.q50.accepted_candidate_ids
+    assert late.candidate_id not in result.q67.accepted_candidate_ids
+    assert set(result.q67.accepted_candidate_ids) <= set(result.q50.accepted_candidate_ids)
