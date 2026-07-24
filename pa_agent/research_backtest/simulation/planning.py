@@ -384,6 +384,7 @@ def build_entry_batch_planning_outcome(
             sizing.result_id: item_by_sizing_id[sizing.result_id].contract
             for sizing in ordered_sizings
         },
+        {sizing.result_id: item_by_sizing_id[sizing.result_id].cost for sizing in ordered_sizings},
         tuple(item.target_open for item in successful_items),
         inputs.stage,
         rejection_audit=scaling_item_rejections,

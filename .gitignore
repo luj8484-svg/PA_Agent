@@ -43,6 +43,13 @@ trade_records/*
 # Public research-data runtime output (raw pages, canonical data, checkpoints)
 research_data_output/
 
+# Historical Binance archive runtime data (large immutable ZIP and Canonical shards)
+/artifacts/historical_data_readiness/data/
+/artifacts/data_readiness/refreshed/
+/artifacts/research_2d/
+/artifacts/research_2d_capacity/
+/artifacts/research_2d_diagnostics/
+
 # ── 本地临时 / 解包产物（WorkBuddy、网关调试等）──────────────────────────────
 _tmp_wb_asar/
 _tmp_auth.js

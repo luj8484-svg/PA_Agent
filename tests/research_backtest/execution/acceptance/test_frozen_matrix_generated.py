@@ -35,14 +35,15 @@ THIS_FILE = Path(__file__).resolve()
 SCENARIO_PATH = (
     ROOT / "tests" / "research_backtest" / "execution" / "fixtures" / "frozen_case_scenarios_v1.tsv"
 )
-LOCKED_MASTER_REGISTRY_HASH = "e56d6e6de968671b6e546d593f0f7624a4233b3772bf49f8bae38879d9ee2ca9"
-LOCKED_EXPLICIT_TEST_SET_HASH = "d9955f044a13f365598a39586220f14208d3842ea950de6beb07b7a10eaad3bc"
+LOCKED_MASTER_REGISTRY_HASH = "b3a44cbcbab6750de182e83377f69a39612ea557df036c4054823bbecfedbddf"
+LOCKED_EXPLICIT_TEST_SET_HASH = "6e6463a86d474254394ade5b948705d60dbb5bdd574956815cfcdade33b3a271"
 EXPLICIT_ID_PATTERN = re.compile(r'(?:registered|test_id)\("([A-Z0-9-]+)"')
 SEMANTIC_CASE_SCHEMA_VERSION = "FROZEN_SEMANTIC_CASE_V2_SOURCE_BOUND"
 LOCAL_CONTRACT_MODULE = "tests.research_backtest.execution.acceptance.test_frozen_matrix_generated"
 UNIT_CONTRACT_MODULES = (
     "tests.research_backtest.execution.unit.test_account_evidence",
     "tests.research_backtest.execution.unit.test_batch_scaling",
+    "tests.research_backtest.execution.unit.test_canonical_required_cash",
     "tests.research_backtest.execution.unit.test_contract_cost_funding",
     "tests.research_backtest.execution.unit.test_entry_intent_time_market",
     "tests.research_backtest.execution.unit.test_entry_plan_factory",

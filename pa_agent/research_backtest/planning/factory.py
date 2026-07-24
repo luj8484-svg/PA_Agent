@@ -61,6 +61,7 @@ from pa_agent.research_backtest.domain.scaling import (
     PortfolioScalingResult,
 )
 from pa_agent.research_backtest.domain.sizing import PositionSizingResult
+from pa_agent.research_backtest.planning.cash import calculate_final_required_cash
 from pa_agent.research_backtest.planning.costs import entry_fee, exit_fee_reserve
 from pa_agent.research_backtest.planning.funding import (
     count_funding_events,
@@ -327,7 +328,14 @@ def build_entry_execution_plan(
         rate_cap,
         funding_count,
     )
-    required_cash = notional + entry_fee_value + exit_fee_value + funding_reserve_value
+    required_cash = calculate_final_required_cash(
+        quantity=quantity,
+        expected_entry_fill_price=inputs.sizing.expected_entry_fill_price,
+        planned_exit_notional_price_basis=inputs.sizing.planned_exit_notional_price_basis,
+        effective_fee_rate=inputs.cost.effective_fee_rate,
+        effective_adverse_rate_cap=rate_cap,
+        funding_event_upper_bound=funding_count,
+    )
     if (
         inputs.accepted_item.final_notional != notional
         or inputs.accepted_item.final_planned_risk != planned_risk

@@ -61,6 +61,8 @@ def complete_entry_inputs(
     existing_open_risk: Decimal = Decimal("0"),
     decision_close_override: Decimal | None = None,
     atr14_4h: Decimal = Decimal("10"),
+    adverse_funding_rate_cap: Decimal = Decimal("0.0001"),
+    wallet_balance: Decimal = Decimal("10000"),
 ):
     market_reason = (
         MarketReason.BULL_DONCHIAN_BREAKOUT
@@ -169,7 +171,7 @@ def complete_entry_inputs(
     funding_risk = covered_funding_risk_config(
         symbol=symbol,
         target_time_utc_ms=TARGET_TIME,
-        adverse_rate_cap=Decimal("0.0001"),
+        adverse_rate_cap=adverse_funding_rate_cap,
         effective_from_utc_ms=0,
         effective_to_utc_ms=MAXIMUM_EXIT_TIME + 1,
         source_kind="REVIEWED_BASELINE",
@@ -183,7 +185,7 @@ def complete_entry_inputs(
     )
     records = account_evidence_records(
         wallet=wallet_ledger_evidence(
-            wallet_balance=Decimal("10000"),
+            wallet_balance=wallet_balance,
             locked_initial_margin=Decimal("0"),
             locked_fee_reserve=Decimal("0"),
             locked_funding_reserve=Decimal("0"),
@@ -258,6 +260,7 @@ def complete_entry_inputs(
         account,
         (sizing,),
         {sizing.result_id: contract},
+        {sizing.result_id: cost},
         (target_open,),
         ResearchStage.BACKTEST,
     )

@@ -19,6 +19,7 @@ from pa_agent.research_backtest.domain.batches import (
     resolution_ref,
 )
 from pa_agent.research_backtest.domain.contracts import verified_contract_rule
+from pa_agent.research_backtest.domain.costs import cost_model_snapshot
 from pa_agent.research_backtest.domain.enums import ResearchStage, ResolutionKind, Side
 from pa_agent.research_backtest.domain.market_inputs import target_minute_open_snapshot
 from pa_agent.research_backtest.domain.rejections import (
@@ -72,6 +73,7 @@ def sizing(
     index: int,
     acct,
     contract,
+    cost,
     *,
     raw=Decimal("1"),
     risk=Decimal("50"),
@@ -98,7 +100,7 @@ def sizing(
         "unscaled_planned_risk": risk,
         "unscaled_required_cash": cash,
         "contract_rule_coverage_id": contract.coverage_id,
-        "cost_model_snapshot_id": "cost_" + str(index) * 24,
+        "cost_model_snapshot_id": cost.snapshot_id,
         "funding_risk_config_id": "frisk_" + str(index) * 24,
         "funding_event_upper_bound": 1,
         "effective_adverse_rate_cap": Decimal("0.0001"),
@@ -133,8 +135,20 @@ def complete(*, reverse=False, eth_min=Decimal("0"), balance=Decimal("10000")):
     acct = account(balance=balance)
     btc_rule = rule("BTCUSDT", 1)
     eth_rule = rule("ETHUSDT", 2, min_qty=eth_min)
-    btc = sizing("BTCUSDT", 1, acct, btc_rule)
-    eth = sizing("ETHUSDT", 2, acct, eth_rule)
+    btc_cost = cost_model_snapshot(
+        symbol="BTCUSDT",
+        fee_rate=Decimal("0.0005"),
+        slippage_rate=Decimal("0.0001"),
+        stress_multiplier=Decimal("1"),
+    )
+    eth_cost = cost_model_snapshot(
+        symbol="ETHUSDT",
+        fee_rate=Decimal("0.0005"),
+        slippage_rate=Decimal("0.0002"),
+        stress_multiplier=Decimal("1"),
+    )
+    btc = sizing("BTCUSDT", 1, acct, btc_rule, btc_cost)
+    eth = sizing("ETHUSDT", 2, acct, eth_rule, eth_cost)
     expected = (
         expected_intent_ref(btc.intent_id, btc.symbol, TIME),
         expected_intent_ref(eth.intent_id, eth.symbol, TIME),
@@ -178,7 +192,8 @@ def complete(*, reverse=False, eth_min=Decimal("0"), balance=Decimal("10000")):
         dependency_lock_hash=LOCK,
     )
     rules = {btc.result_id: btc_rule, eth.result_id: eth_rule}
-    return batch, acct, (btc, eth), rules, opens, ResearchStage.BACKTEST
+    costs = {btc.result_id: btc_cost, eth.result_id: eth_cost}
+    return batch, acct, (btc, eth), rules, costs, opens, ResearchStage.BACKTEST
 
 
 @registered("UT-SCHEMA-018", "2B-SCHEMA-018")
@@ -243,8 +258,8 @@ def test_completeness_event_cannot_precede_eligible_time() -> None:
 
 @registered("UT-PORT-001", "2B-PORT-001")
 def test_same_target_items_scale_together_after_complete_batch() -> None:
-    batch, acct, results, rules, opens, stage = complete(balance=Decimal("1000"))
-    scaled = scale_portfolio(batch, acct, results, rules, opens, stage)
+    batch, acct, results, rules, costs, opens, stage = complete(balance=Decimal("1000"))
+    scaled = scale_portfolio(batch, acct, results, rules, costs, opens, stage)
     assert scaled.ordered_input_result_ids == batch.ordered_successful_sizing_result_ids
     assert len(scaled.item_results) == 2
 
@@ -259,8 +274,8 @@ def test_batch_and_scaling_are_order_invariant() -> None:
 
 @registered("UT-PORT-003", "2B-PORT-003")
 def test_final_scale_is_minimum_of_one_risk_and_cash() -> None:
-    batch, acct, results, rules, opens, stage = complete(balance=Decimal("1000"))
-    scaled = scale_portfolio(batch, acct, results, rules, opens, stage)
+    batch, acct, results, rules, costs, opens, stage = complete(balance=Decimal("1000"))
+    scaled = scale_portfolio(batch, acct, results, rules, costs, opens, stage)
     expected = reference_scale(
         remaining_risk=acct.current_equity * Decimal("0.01"),
         deployable_cash=acct.available_balance,
@@ -272,10 +287,10 @@ def test_final_scale_is_minimum_of_one_risk_and_cash() -> None:
 
 @registered("UT-PORT-004", "2B-PORT-004")
 def test_rejected_scaled_item_does_not_redistribute_to_other_item() -> None:
-    batch, acct, results, rules, opens, stage = complete(
+    batch, acct, results, rules, costs, opens, stage = complete(
         balance=Decimal("1000"), eth_min=Decimal("1")
     )
-    scaled = scale_portfolio(batch, acct, results, rules, opens, stage)
+    scaled = scale_portfolio(batch, acct, results, rules, costs, opens, stage)
     assert scaled.final_scale == Decimal("0.1")
     assert {type(item).__name__ for item in scaled.item_results} == {
         "AcceptedScalingItem",
@@ -285,8 +300,8 @@ def test_rejected_scaled_item_does_not_redistribute_to_other_item() -> None:
 
 @registered("UT-PORT-009", "2B-PORT-009")
 def test_scaling_result_binds_exactly_one_batch() -> None:
-    batch, acct, results, rules, opens, stage = complete()
-    scaled = scale_portfolio(batch, acct, results, rules, opens, stage)
+    batch, acct, results, rules, costs, opens, stage = complete()
+    scaled = scale_portfolio(batch, acct, results, rules, costs, opens, stage)
     assert scaled.portfolio_planning_batch_id == batch.batch_id
     assert scaled.portfolio_planning_batch_content_hash == batch.batch_content_hash
 
@@ -302,7 +317,7 @@ def test_accepted_item_has_no_opaque_input_hash() -> None:
 
 @registered("UT-RT-049", "2B-PORT-009")
 def test_target_open_objects_must_match_batch_ids_and_rows() -> None:
-    batch, acct, results, rules, opens, stage = complete()
+    batch, acct, results, rules, costs, opens, stage = complete()
     replacement = target_minute_open_snapshot(
         symbol="BTCUSDT",
         open_time_utc_ms=TIME,
@@ -312,4 +327,4 @@ def test_target_open_objects_must_match_batch_ids_and_rows() -> None:
         dependency_lock_hash=LOCK,
     )
     with pytest.raises(ValueError, match="target-open"):
-        scale_portfolio(batch, acct, results, rules, (replacement, opens[1]), stage)
+        scale_portfolio(batch, acct, results, rules, costs, (replacement, opens[1]), stage)

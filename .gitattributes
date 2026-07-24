@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Preserve canonical attribution artifact bytes so manifest SHA-256 values survive checkout.
+artifacts/v1_failure_attribution/** -text
+artifacts/v1_failure_attribution.zip -text
